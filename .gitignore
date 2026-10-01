@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+.DS_Store
+
+# outputs of `splice-assay example` and local runs
+splice_assay_example/
+out/
+
+# local development notes: they name paths on this machine
+HANDOFF.md
+
+# never commit patient-level data
+*.parquet
+data/
+protein_cache/

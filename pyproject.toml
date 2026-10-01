@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=77"]               # SPDX licence expressions (PEP 639)
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "splice-assay"
+dynamic = ["version"]
+description = "Case-vs-reference and survival panels for alternative-splicing events, from plain tables."
+readme = "README.md"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Zachary Wakefield" }]
+keywords = ["alternative splicing", "PSI", "rMATS", "survival analysis", "Kaplan-Meier", "tumour-normal"]
+dependencies = [
+  "numpy>=1.24",
+  "pandas>=2.0",
+  "scipy>=1.11",                   # stats.false_discovery_control (q values)
+  "matplotlib>=3.7",
+  "lifelines>=0.27.8",              # 0.27.0-0.27.4 fail with pandas 2 (Series.iteritems); 0.27.7 needs pkg_resources
+]
+
+[project.urls]
+Source = "https://github.com/zachpwakefield/Splice-Assay"
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=12"]
+test = ["pytest>=7"]
+
+[project.scripts]
+splice-assay = "splice_assay.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "splice_assay._version.__version__" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+splice_assay = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["error::FutureWarning:splice_assay"]
