@@ -94,19 +94,19 @@ _TSL = re.compile(r"^\s*([1-5])(?:\s.*)?$")
 
 R_EXPORT = r"""
 # base R only, so any R that can read the cache works (no data.table needed)
-a <- commandArgs(TRUE); d <- a[1]; out <- a[2]
+a <- commandArgs(TRUE); d <- a[1]; out <- a[2]; pre <- a[3]
 rd <- function(f) { x <- readRDS(f); class(x) <- "data.frame"; x }
 wr <- function(x, f) {
   con <- gzfile(file.path(out, f), "w")
   write.table(x, con, sep = "\t", quote = TRUE, qmethod = "double", row.names = FALSE, na = "")
   close(con)
 }
-g <- rd(file.path(d, "human_gencode_v45.gtf.rds"))
+g <- rd(file.path(d, paste0(pre, ".gtf.rds")))
 cols <- c("transcript_id","transcript_name","transcript_type","transcript_support_level","gene_id","gene_name","chr",
           "strand","start","end","exon_id","exon_number","protein_id","cds_gen_start","cds_gen_stop","cds_rel_start",
           "cds_rel_stop")
 wr(g[g$type == "exon", cols], "exons.tsv.gz")
-s <- rd(file.path(d, "human_gencode_v45_sequences.rds"))
+s <- rd(file.path(d, paste0(pre, "_sequences.rds")))
 s <- s[!is.na(s$protein_seq) & nzchar(s$protein_seq), c("transcript_id", "protein_id", "protein_seq")]
 wr(s[!duplicated(s), ], "proteins.tsv.gz")
 dbs <- c("interpro","pfam","cdd","elm","mobidblite","signalp","tmhmm")
@@ -122,6 +122,9 @@ f <- do.call(rbind, lapply(dbs, function(x) {
              start = as.integer(y$start), stop = as.integer(y$stop),
              g_start = as.integer(pmin(gs, ge)), g_end = as.integer(pmax(gs, ge)), stringsAsFactors = FALSE)
 }))
+if (is.null(f)) f <- data.frame(transcript_id = character(), database = character(), feature_id = character(),
+                                name = character(), start = integer(), stop = integer(), g_start = integer(),
+                                g_end = integer())
 wr(f[!duplicated(f), ], "features.tsv.gz")
 """
 
@@ -229,25 +232,37 @@ class ProteinCache:
         return sub
 
 
+def cache_prefix(folder) -> str:
+    """The annotation of a SpliceImpactR export folder: '<name>' for the one <name>.gtf.rds that has its
+    <name>_sequences.rds beside it (e.g. human_gencode_v45; docs/annotation-cache.md shows how to write them)."""
+    src = Path(folder).expanduser()
+    names = sorted(p.name[:-len(".gtf.rds")] for p in src.glob("*.gtf.rds")
+                   if (src / f"{p.name[:-len('.gtf.rds')]}_sequences.rds").exists())
+    if not names:
+        raise InputError(f"{src}: no <name>.gtf.rds with its <name>_sequences.rds, e.g. human_gencode_v45.gtf.rds "
+                         "(docs/annotation-cache.md shows how to save them from SpliceImpactR)")
+    if len(names) > 1:
+        raise InputError(f"{src}: {len(names)} annotations ({', '.join(names)}); keep one per folder")
+    return names[0]
+
+
 def build_cache(annotation_cache, out_dir, rscript: str = "Rscript") -> dict[str, Path]:
-    """Export a SpliceImpactR annotation cache to a protein cache folder. The cache is human_gencode_v45*.rds plus
-    the protein-feature .rds files. The folder is Parquet when pyarrow is installed, else gzipped TSV. Any R
-    (3.5 or newer) works; no R package is needed."""
+    """Export a SpliceImpactR annotation folder to a protein cache folder. The folder holds <name>.gtf.rds and
+    <name>_sequences.rds (e.g. human_gencode_v45) plus the protein-feature .rds files. The output is Parquet when
+    pyarrow is installed, else gzipped TSV. Any R (3.5 or newer) works; no R package is needed."""
     found = shutil.which(rscript)
     if found is None:
         raise InputError(f"{rscript} was not found: Rscript is needed once, to read the SpliceImpactR .rds files "
                          "(give its path with --rscript)")
     src = Path(annotation_cache).expanduser()
-    for f in ("human_gencode_v45.gtf.rds", "human_gencode_v45_sequences.rds"):
-        if not (src / f).exists():
-            raise InputError(f"{src}: no {f} (is this a SpliceImpactR annotation cache?)")
+    pre = cache_prefix(src)
     out = Path(out_dir).expanduser()
     out.mkdir(parents=True, exist_ok=True)
     paths = {}
     with tempfile.TemporaryDirectory() as tmp:
         script = Path(tmp) / "export.R"
         script.write_text(R_EXPORT)
-        r = subprocess.run([found, str(script), str(src), tmp], capture_output=True, text=True)
+        r = subprocess.run([found, str(script), str(src), tmp, pre], capture_output=True, text=True)
         if r.returncode:
             raise InputError(f"the R export with {found} failed (another R can be given with --rscript): "
                              f"{r.stderr.strip()[-800:]}")
@@ -260,7 +275,7 @@ def build_cache(annotation_cache, out_dir, rscript: str = "Rscript") -> dict[str
                 p = out / f"{name}.tsv.gz"
                 df.to_csv(p, sep="\t", index=False)
             paths[name] = p
-    (out / "SOURCE.txt").write_text(f"Exported from {src} by splice-assay protein-cache.\n")
+    (out / "SOURCE.txt").write_text(f"Exported from {src} ({pre}) by splice-assay protein-cache.\n")
     return paths
 
 

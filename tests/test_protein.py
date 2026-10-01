@@ -151,9 +151,17 @@ def test_probe_and_cli_with_proteins(ds, cache, cache_dir, tmp_path, capsys):
 
 
 def test_build_cache_needs_r_and_the_rds_files(tmp_path, monkeypatch):
+    from splice_assay.protein import cache_prefix
     if shutil.which("Rscript"):
-        with pytest.raises(InputError, match="no human_gencode_v45.gtf.rds"):
+        with pytest.raises(InputError, match="no <name>.gtf.rds with its <name>_sequences.rds"):
             build_cache(tmp_path, tmp_path / "out")
+    for name in ("mouse_gencode_vM34", "human_gencode_v45"):
+        (tmp_path / f"{name}.gtf.rds").touch()
+    (tmp_path / "mouse_gencode_vM34_sequences.rds").touch()
+    assert cache_prefix(tmp_path) == "mouse_gencode_vM34"                      # any species or release
+    (tmp_path / "human_gencode_v45_sequences.rds").touch()
+    with pytest.raises(InputError, match="2 annotations"):
+        cache_prefix(tmp_path)
     monkeypatch.setattr("shutil.which", lambda *_: None)
     with pytest.raises(InputError, match="Rscript was not found"):
         build_cache(tmp_path, tmp_path / "out")

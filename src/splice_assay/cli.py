@@ -521,8 +521,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("protein-cache", help="a protein cache from a SpliceImpactR annotation cache (once; needs "
                                               "Rscript, any R)")
-    sp.add_argument("annotation_cache", help="SpliceImpactR annotation cache folder (human_gencode_v45*.rds and the "
-                                             "protein-feature .rds files)")
+    sp.add_argument("annotation_cache", help="folder of SpliceImpactR objects: <name>.gtf.rds, <name>_sequences.rds "
+                                             "and protein-feature .rds files (docs/annotation-cache.md)")
     sp.add_argument("--out", required=True, help="folder for the protein cache")
     sp.add_argument("--rscript", default="Rscript", help="Rscript to use (default: Rscript on the PATH)")
     sp.set_defaults(func=cmd_protein_cache)
