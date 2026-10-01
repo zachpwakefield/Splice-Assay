@@ -11,7 +11,7 @@ suggestion.
 
 ```bash
 # once: export a SpliceImpactR annotation cache (needs R, any version from 3.5, no packages; about 30 s)
-splice-assay protein-cache ~/annotation_cache --out protein_cache/
+splice-assay protein-cache ~/splice_assay_annotation --out protein_cache/    # see annotation-cache.md
 export SPLICE_ASSAY_PROTEINS=protein_cache/        # or pass --proteins protein_cache/ to each command
 
 splice-assay proteins data/ --gene FNBP1             # the suggestion for every event of a gene, printed
@@ -148,8 +148,10 @@ GENCODE v45.
 
 ## The cache
 
-`protein-cache` reads a SpliceImpactR annotation cache:
-- `human_gencode_v45.gtf.rds` and `human_gencode_v45_sequences.rds`;
+`protein-cache` reads a folder of SpliceImpactR objects; [annotation-cache.md](annotation-cache.md) shows how to
+write it:
+- `<name>.gtf.rds` and `<name>_sequences.rds`, e.g. `human_gencode_v45.gtf.rds` (any species or release, one per
+  folder);
 - the protein-feature files `interpro.rds`, `pfam.rds`, `cdd.rds`, `elm.rds`, `mobidblite.rds`, `signalp.rds` and
   `tmhmm.rds`.
 

@@ -43,6 +43,15 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
 - **`--where COLUMN=VALUE[,VALUE]`.** Selects patients by a clinical or samples column (case-insensitive;
   conditions combine with each other and with `--keep`).
 - **Several endpoints in one probe.** `--endpoint OS --endpoint DSS` (or `all`), one folder per endpoint.
+- **Proportional-hazards notes.**
+  - Every Cox term, and the KM high/low split, gets a Schoenfeld test (`ph_p`, `cox_terms.ph_p`, `km_ph_p`).
+  - A p below `ph_note_below` (0.05) adds a note to the model header, the KM header, `cox_notes` and `km_notes`,
+    and to the probe report's "Notes on the survival tests". No result is removed.
+- **Guides.** [Reading the results, panel by panel](docs/reading-results.md) and
+  [getting the annotation cache from SpliceImpactR](docs/annotation-cache.md).
+  - `docs/make_figures.py` regenerates their figures and the README figure.
+- **`protein-cache`** reads any `<name>.gtf.rds` with its `<name>_sequences.rds` (any species or release), and works
+  without feature files.
 - **Long pages are split.** More than `cohorts_per_page` (6) cohorts are drawn over balanced pages, each with the
   full forest (a `--top all` page of 27 cohorts was 140 inches tall).
 - **Stacked layout.** For three or more cohorts, one row per cohort holds its comparison, KM and Cox model; the

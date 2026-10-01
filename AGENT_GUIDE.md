@@ -86,7 +86,7 @@ splice-assay probe DATA --gene GENE [--gtf annotation.gtf.gz] [--na-value missin
 
 | File | Read it for |
 |---|---|
-| `report.md` | Start here: what was run, how many p < 0.05 chance would give, and the ranked events with links to pages |
+| `report.md` | Start here: what was run, how many p < 0.05 chance would give, and the ranked events with links to pages ([how to read a page](docs/reading-results.md)) |
 | `events.csv` | One row per event (see below) |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted (`adj_*`), and BH q within each gene |
 | `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot, group-hit frame |
@@ -106,10 +106,10 @@ splice-assay probe DATA --gene GENE [--gtf annotation.gtf.gz] [--na-value missin
   - `share_hr_up`: the share of tested cohorts with HR > 1;
   - `measurable`: false when the event was not testable anywhere.
 
-### Flags on the Cox fits
+### Notes on the survival tests
 
-The model header on a page can carry notes in brackets. The probe report sums them up under "Flags on the Cox
-fits". Each is a reason for caution, not a failed fit:
+The model header on a page can carry notes in brackets, and a KM header a last line. The probe report sums them up
+under "Notes on the survival tests". Each is a reason for caution, not a failed test:
 - **`n events per term (< 10)`:** an overfit risk. Read the HR's CI, and prefer the base model when the
   adjusted one is flagged. Typical of small cohorts and subsets.
 - **`narrow PSI range (IQR … < 0.05)`:** the HR per IQR covers a few PSI points. It is common for low-inclusion
@@ -117,6 +117,10 @@ fits". Each is a reason for caution, not a failed fit:
 - **`stage I merged into II (…)`:** a level too rare to estimate joined its neighbour, so the reference may read
   "I–II".
 - **`unstable: …`:** a covariate term with se > 3.
+- **`non-proportional hazards: PSI (p …)`** (model header) **or `non-proportional hazards (p …)`** (KM header):
+  the Schoenfeld test says the hazard ratio changes over follow-up, so the HR or log-rank result is an average.
+  Look at the KM curves; crossing curves are the usual cause. `cells.csv` holds every test's p (`ph_p`,
+  `adj_ph_p`, `km_ph_p`).
 
 ### Host-gene expression
 
@@ -133,8 +137,8 @@ Use them when judging an event:
 
 ### Optional: protein changes
 
-With a protein cache (`--proteins DIR` or `$SPLICE_ASSAY_PROTEINS`; build one once with `splice-assay
-protein-cache <SpliceImpactR annotation cache> --out DIR`), the probe also suggests how each event could change the
+With a protein cache (`--proteins DIR` or `$SPLICE_ASSAY_PROTEINS`; build one once as in
+[docs/annotation-cache.md](docs/annotation-cache.md)), the probe also suggests how each event could change the
 protein:
 - `protein_change` in events.csv, e.g. `+61 aa, in frame`, `frameshift`, `exon swap, in frame` or `5′ UTR`;
 - `proteins.csv`, with the transcripts, how they matched, residues and features;

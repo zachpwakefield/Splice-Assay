@@ -16,6 +16,16 @@ event.
 
 *The example uses simulated data: `splice-assay example demo/`.*
 
+## Guides
+
+- [Reading the results, panel by panel](docs/reading-results.md): every part of a page, the probe's report and
+  tables, and a reading order.
+- [Getting the annotation cache from SpliceImpactR](docs/annotation-cache.md): what the protein suggestions need,
+  and how to build it.
+- [Methods](docs/methods.md): every statistic and threshold.
+- [Protein suggestions](docs/proteins.md): how events are matched to transcripts, and what the band shows.
+- [Agent guide](AGENT_GUIDE.md): the steps from data to report, for agents and new users.
+
 ## Install
 
 ```bash
@@ -233,14 +243,15 @@ transcripts of the two forms with SpliceImpactR's matching, then compares their 
 band (both isoforms, domains, the event's residues), and probes get a Protein column.
 
 ```bash
-splice-assay protein-cache ~/annotation_cache --out protein_cache/   # once, from a SpliceImpactR annotation cache
+splice-assay protein-cache ~/splice_assay_annotation --out protein_cache/   # once (docs/annotation-cache.md)
 export SPLICE_ASSAY_PROTEINS=protein_cache/                          # or --proteins on panel, panels and probe
 splice-assay proteins data/ --gene FNBP1      # e.g. "inclusion adds 61 aa in frame (residues 330–390 of FNBP1-202)"
 ```
 
 These are suggestions read from annotation; an event without a good match is not shown. The example writes a small
-synthetic cache (`demo/proteins/`). Details, the cache format for other annotation, and checks against SpliceImpactR:
-[docs/proteins.md](docs/proteins.md).
+synthetic cache (`demo/proteins/`). [docs/annotation-cache.md](docs/annotation-cache.md) shows how to build the real
+one with SpliceImpactR. [docs/proteins.md](docs/proteins.md) covers the matching, the cache format for other
+annotation, and checks against SpliceImpactR.
 
 ## Defaults (nothing needs to be chosen)
 
@@ -270,11 +281,14 @@ synthetic cache (`demo/proteins/`). Details, the cache format for other annotati
 - **Rare categories.** A level with fewer than 10 patients in a cohort, or with no deaths, cannot be estimated, so it
   joins its neighbour: stage I with 2 patients becomes part of "I–II", which is then the reference. Other categories
   join the most common level. The page lists each merge. Change the limit with `level_min_patients` (0 = never).
-- **Flags.** Two notes warn without changing the fit:
+- **Notes.** These warn without changing any result:
   - fewer than 10 events per model term (an overfit risk);
-  - a PSI IQR below 0.05 in the fit cohort, so the HR per IQR covers a few PSI points.
+  - a PSI IQR below 0.05 in the fit cohort, so the HR per IQR covers a few PSI points;
+  - non-proportional hazards: a term's Schoenfeld test, or the KM split's, has p < 0.05, so the effect changes over
+    follow-up.
 
-  Settings `cox_events_per_term`, `narrow_psi_below` and `narrow_psi_measure` (`iqr` or `sd`) control them.
+  Settings `cox_events_per_term`, `narrow_psi_below`, `narrow_psi_measure` (`iqr` or `sd`) and `ph_note_below`
+  control them.
 
 ## The Cox model
 

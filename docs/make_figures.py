@@ -1,0 +1,68 @@
+"""Regenerate the figures in docs/ from the synthetic example (no real data is used).
+
+    python docs/make_figures.py
+
+It writes docs/example_panel.png (the README figure), the reading guide's crops in docs/reading/ and the probe overview
+used by the guide. The crops are pixel boxes of one page drawn at 200 dpi; the script stops when that page changes
+size, because the boxes then need adjusting (blank horizontal bands separate the page's sections).
+"""
+from __future__ import annotations
+
+import shutil
+import tempfile
+from pathlib import Path
+
+from PIL import Image
+
+import splice_assay as sa
+from splice_assay import example
+from splice_assay.clinical import auto_clinical
+from splice_assay.probe import probe
+
+DOCS = Path(__file__).resolve().parent
+OUT = DOCS / "reading"
+PAGE_SIZE = (1440, 4062)                    # the guide page at 200 dpi, in pixels
+CROPS = {                                   # name: (top, bottom) in pixels of the guide page
+    "01_schematic": (0, 275),
+    "02_protein": (275, 615),
+    "03_cohort_row": (615, 1090),
+    "04_cohort_without_normals": (1560, 2032),
+    "05_forest": (2040, 2330),
+    "06_expression": (2395, 2930),
+    "07_legend_footnote": (3880, 4062),
+}
+
+
+def main() -> None:
+    OUT.mkdir(exist_ok=True)
+    s = sa.Settings(formats=("png",), dpi=200)
+    with tempfile.TemporaryDirectory() as tmp:
+        example.write(tmp)
+        data, gtf, proteins = Path(tmp) / "data", Path(tmp) / "data" / "annotation.gtf", Path(tmp) / "proteins"
+        ds = sa.Dataset.from_dir(data)
+        # the README figure: two cohorts, the model band below
+        res = sa.analyse(ds)
+        model = sa.CoxModel().with_clinical(("age", "sex", "stage"), baseline={"stage": "I", "sex": "female"})
+        sa.event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", gtf=gtf, results=res, detail=model,
+                       proteins=proteins, out_dir=tmp, stem="example_panel", settings=s)
+        shutil.copy(Path(tmp) / "example_panel.png", DOCS / "example_panel.png")
+        # the guide page: three cohorts as a probe draws them (pairs; too few pairs; no normal samples)
+        dsa, adjusted, _ = auto_clinical(ds)
+        gene = list(dsa.events.index[dsa.events.gene.eq("SYN1")])
+        res = sa.analyse(dsa, events=gene, endpoints=["OS"], settings=s)
+        sa.event_panel(dsa, "SYN1:SE:1", ["COH1", "COH2", "COH4"], "OS", gtf=gtf, results=res, detail=adjusted,
+                       proteins=proteins, out_dir=tmp, stem="guide_page", settings=s)
+        page = Image.open(Path(tmp) / "guide_page.png")
+        if page.size != PAGE_SIZE:
+            raise SystemExit(f"the guide page is {page.size} px, not {PAGE_SIZE}: adjust CROPS in {__file__}")
+        for name, (top, bottom) in CROPS.items():
+            page.crop((0, top, page.size[0], bottom)).save(OUT / f"{name}.png", optimize=True)
+        # the probe's overview, as the guide shows it
+        r = probe(ds, genes=["SYN1"], settings=s, gtf=gtf, out_dir=Path(tmp) / "probe", max_pages=1,
+                  log=lambda *_: None)
+        shutil.copy(r.paths["overview"], OUT / "08_overview.png")
+    print(f"wrote {DOCS / 'example_panel.png'} and {len(CROPS) + 1} figures in {OUT}")
+
+
+if __name__ == "__main__":
+    main()
