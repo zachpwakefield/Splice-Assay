@@ -61,11 +61,15 @@ def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag:
     ax.set_ylabel(ylabel, labelpad=1)
     q = row.get("km_q", np.nan)
     q = np.nan if q is None else float(q)
+    ph = row.get("km_ph_p", np.nan)
+    ph = np.nan if ph is None else float(ph)
+    ph_line = s.ph_note_below > 0 and np.isfinite(ph) and ph < s.ph_note_below
     ax.text(0.0, 1.03, f"HR {row['logrank_hr']:.2f} (high vs low) · log-rank p {S.fp(row['km_p'])}\n"
             + (f"q {S.fp(q)}\n" if np.isfinite(q) else "") +
             f"events {int(row['events_high'])} high, {int(row['events_low'])} low\n"
-            f"split at {what} {S.fcut(row['cutoff'])}", transform=ax.transAxes, fontsize=6.0, va="bottom", ha="left",
-            color=S.INK2, linespacing=1.2)
+            f"split at {what} {S.fcut(row['cutoff'])}"
+            + (f"\nnon-proportional hazards (p {S.fp(ph)})" if ph_line else ""), transform=ax.transAxes, fontsize=6.0,
+            va="bottom", ha="left", color=S.INK2, linespacing=1.2)
     # at-risk table under the axis
     pos = ax.get_position()
     W, H = fig.get_figwidth(), fig.get_figheight()

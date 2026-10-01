@@ -41,7 +41,8 @@ RANKING = ("measurable events first; then cohorts where the adjusted Cox p < 0.0
            "then cohorts with both a group hit and a survival hit, then cohorts where the KM p < 0.05, then the "
            "smallest p (adjusted Cox, else base Cox, else KM)")
 ADJ_COLS = ["cox_status", "cox_model", "cox_n", "cox_events", "cox_n_dropped", "cox_notes", "hr_per_iqr",
-            "ci_low_iqr", "ci_high_iqr", "cox_p", "cox_q", "cox_q_tests", "cox_events_per_term", "psi_narrow"]
+            "ci_low_iqr", "ci_high_iqr", "cox_p", "cox_q", "cox_q_tests", "cox_events_per_term", "psi_narrow",
+            "ph_p"]
 
 
 @dataclass
@@ -352,32 +353,42 @@ def _have(n: int) -> str:
 
 
 def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> list[str]:
-    """The report's flags on the Cox fits: narrow PSI ranges and few events per term (notes only; the fits ran)."""
+    """The report's notes on the survival tests: narrow PSI ranges, few events per term and non-proportional hazards
+    (notes only; every test ran)."""
     out = []
     t = cells[cells.cox_status.eq("tested")]
     ta = cells[cells.get("adj_cox_status", pd.Series(dtype=object, index=cells.index)).eq("tested")] if adj_model \
         else cells.iloc[:0]
-    if not len(t) or not (s.narrow_psi_below > 0 or s.cox_events_per_term > 0):
-        return out
+    tk = cells[cells.km_status.eq("tested")]
     name = (lambda r: f"{ds.events.at[r.event_id, 'label']} {r.cohort}")
-    if s.narrow_psi_below > 0:
+    if len(t) and s.narrow_psi_below > 0:
         nar = t[t.psi_narrow.fillna(False).astype(bool)]
         sig = nar[nar.cox_p < s.alpha]
         out.append(f"- **Narrow PSI range** ({s.narrow_psi_measure.upper()} of PSI below {s.narrow_psi_below:g} in the "
                    f"fit cohort, so the HR covers a few PSI points): {len(nar)} of {len(t)} base-model fits"
                    + (f"; with p < {s.alpha:g}: {', '.join(name(r) for r in sig.itertuples())}" if len(sig) else "")
                    + ".")
-    if s.cox_events_per_term > 0:
+    if len(t) and s.cox_events_per_term > 0:
         few = (lambda d, col: d[d[col] < s.cox_events_per_term] if col in d else d.iloc[:0])
         fb, fa = few(t, "cox_events_per_term"), few(ta, "adj_cox_events_per_term")
         out.append(f"- **Overfit risk** (fewer than {s.cox_events_per_term:g} events per model term): {len(fb)} of "
                    f"{len(t)} base-model fits" + (f", {len(fa)} of {len(ta)} adjusted fits" if adj_model else "")
                    + (f" (cohorts: {', '.join(sorted(set(fb.cohort) | set(fa.cohort)))})" if len(fb) or len(fa) else "")
                    + ".")
-    return ["## Flags on the Cox fits", "", *out,
-            "- Both are notes on the page's model header; the fits ran. Settings: `narrow_psi_below`, "
-            "`narrow_psi_measure`, `cox_events_per_term`.", ""]
-
+    if (len(t) or len(tk)) and s.ph_note_below > 0:
+        low = (lambda d, col: d[d[col] < s.ph_note_below] if col in d else d.iloc[:0])
+        pb, pk = low(t, "ph_p"), low(tk, "km_ph_p")
+        sig = pb[pb.cox_p < s.alpha]
+        out.append(f"- **Non-proportional hazards** (Schoenfeld test on the Kaplan–Meier time scale, p below "
+                   f"{s.ph_note_below:g}; the HR then averages an effect that changes over follow-up): the PSI term in "
+                   f"{len(pb)} of {len(t)} base-model fits"
+                   + (f" (with p < {s.alpha:g}: {', '.join(name(r) for r in sig.itertuples())})" if len(sig) else "")
+                   + f"; the KM split in {len(pk)} of {len(tk)} log-rank tests. Look at the KM curves of those cells.")
+    if not out:
+        return out
+    return ["## Notes on the survival tests", "", *out,
+            "- All are notes on the pages and in `cells.csv`; every test ran and no result is removed. Settings: "
+            "`narrow_psi_below`, `narrow_psi_measure`, `cox_events_per_term`, `ph_note_below`.", ""]
 
 def _fmt(v, nd=2):
     return "–" if v is None or (isinstance(v, float) and not np.isfinite(v)) else f"{v:.{nd}f}"

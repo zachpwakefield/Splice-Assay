@@ -85,8 +85,11 @@ tumour minus normal).
     the mode.
   - HR per IQR = exp(β·IQR/0.10), where IQR is the interquartile range of PSI in the fit cohort. Its 95% CI is
     exp((β ± 1.96·se)·IQR/0.10). It is left empty when the IQR is 0.
-  - The PH test is lifelines' `proportional_hazard_test` with the KM time transform, for unstratified models. It is
-    reported, not used.
+  - **Proportional hazards.** Every fit gets lifelines' `proportional_hazard_test`: the Schoenfeld-residual test on
+    the Kaplan–Meier time scale, one test per term, stratified models included.
+    - `ph_p` is the PSI term's p; `cox_terms.ph_p` holds every term's.
+    - The KM comparison gets the same test on a Cox model of the high-arm indicator (`km_ph_p`).
+    - The tests are reported, never used to drop a result (see Notes on a fit).
   - `cox_terms` holds every term: coefficient, se, HR (per its unit), 95% CI and p.
 - **Low variance.** When SD(PSI) is below `low_psi_variance_sd` (0.002), neither test runs (`low_psi_variance`).
 - **Failed fits.** A fit is marked `failed` and reports no estimate when any of these occur: a lifelines convergence
@@ -149,15 +152,18 @@ the expression rows of each page; the probe's `expression_cells.csv`).
   of that cohort's model (`cox_notes`).
 - **Unstable terms.** A covariate term with se > 3 (a sparse level, or near separation) is reported and flagged as
   unstable in `cox_notes`.
-- **Flags on a fit.** Two notes go in `cox_notes` and on the page's model header. Both are notes only: the fit runs
-  and its estimates are unchanged.
+- **Notes on a fit.** These notes go in `cox_notes` and on the page's model header (the KM one in `km_notes` and on
+  the KM header). All are notes only: the test runs and its estimates are unchanged.
   - **Overfit risk:** fewer than `cox_events_per_term` (10) events per estimated term. Terms are the PSI, expression
     and covariate coefficients, one per level beyond the reference; strata do not count. The value is
     `cox_events_per_term` in the tables.
   - **Narrow PSI range:** the PSI spread in the fit cohort is below `narrow_psi_below` (0.05), so the HR per IQR
     describes a change of a few PSI points. The spread is the IQR (the HR's unit) or the SD
     (`narrow_psi_measure`). The flag is `psi_narrow` in the tables.
-  - The probe report counts both flags and names the flagged fits with p < α.
+  - **Non-proportional hazards:** a term's proportional-hazards p is below `ph_note_below` (0.05), so its effect
+    changes over follow-up and the HR is an average over it. The KM header says the same when the high/low split
+    fails the test. Crossing curves are the usual cause.
+  - The probe report counts each note and names the noted fits with p < α.
 - **Probe ranking.** For one endpoint, events measurable in at least one cohort (a Cox fit or a log-rank test ran)
   come first. Events are then ranked by these criteria in turn:
   1. the number of cohorts with an adjusted Cox p < α;

@@ -260,6 +260,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                  any(np.isfinite(float(_get(sv.loc[f], "km_q"))) for f in focus if f in sv.index))
     if any_q:
         row_title += 0.10                                   # a line for q above the views
+    gex_title = row_title                                   # the expression rows reserve their own PH line
+    if _any_km_ph([_get(sv.loc[f], "km_ph_p") for f in focus if f in sv.index], s):
+        row_title += 0.10                                   # a line for a KM proportional-hazards note
     forest_h = (0.106 if n_ev == 1 else 0.18) * len(fcoh)
     W = 7.2
     if detail_model is not None and detail_results is None:
@@ -321,7 +324,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     pbands = [b for b in (PR.prepare(changes.get(e), W, col_ev, lab if n_ev == 2 else "")
                           for e, lab in zip(events, labels)) if b is not None]
     prot_h = sum(b["height"] for b in pbands) + (0.06 if pbands else 0.0)
-    gx = _gex_section(ds, focus, endpoint, s, detail_model or model, W, has_ref, marks, label_w, row_title,
+    gx = _gex_section(ds, focus, endpoint, s, detail_model or model, W, has_ref, marks, label_w, gex_title,
                       tab_h) if gex else None
     gex_h = gx["height"] if gx else 0.0
     H = top + sch_h + prot_h + gap1 + main_h + after_h + gex_h + legend_h
@@ -548,6 +551,12 @@ def _q(cell) -> str:
     return f" · PSI q {S.fp(q)}" if np.isfinite(q) else ""
 
 
+def _any_km_ph(values, s) -> bool:
+    """Whether any KM panel prints the proportional-hazards note (its p below ph_note_below)."""
+    return s.ph_note_below > 0 and any(np.isfinite(float(v)) and float(v) < s.ph_note_below for v in values
+                                       if v is not None)
+
+
 def _cell_model_text(r, band) -> str:
     """The model fitted in this cell, with its notes (variables left out, merged levels, flags)."""
     txt = r.cox_model if isinstance(r.get("cox_model"), str) else band["describe"]
@@ -657,6 +666,8 @@ def _gex_section(ds, focus, endpoint, s, model, W, has_ref, marks, label_w, row_
     n_terms = max([len(x["disp"]) for x in cells] + [3])
     describe = gm.describe(False).replace("PSI", "expression", 1)
     extra = _head_extra(cells, L["model"][1], 5.6, lambda c: _cell_model_text(c["row"], {"describe": describe}), 2)
+    if _any_km_ph([c["v"].get("km_ph_p") for c in cells], s):
+        row_title += 0.10                                   # a line for a KM proportional-hazards note
     row_h = max(row_title + 1.02 + tab_h, 0.50 + extra + BAND_PITCH * n_terms + BAND_AXIS + 0.10)
     shown = [d["r"] for x in cells for d in x["disp"] if d["r"] is not None]
     smp = ds.samples[ds.samples.cohort.isin(coh) & ds.samples.role.isin(["case", "reference"])]
@@ -665,7 +676,7 @@ def _gex_section(ds, focus, endpoint, s, model, W, has_ref, marks, label_w, row_
     lo, hi = (float(vals.min()), float(vals.max())) if len(vals) else (0.0, 1.0)
     pad = 0.06 * (hi - lo) if hi > lo else 0.5
     return dict(gene=gene, model=gm, res=res, cells=cells, L=L, row_h=row_h, lim=(lo - pad, hi + pad),
-                xlim=_range(shown) if shown else None, describe=describe, stack_extra=extra,
+                xlim=_range(shown) if shown else None, describe=describe, stack_extra=extra, row_title=row_title,
                 cols=terms_columns(L["model"][1], [x["disp"] for x in cells if x["disp"]] or [[]], 5.8),
                 height=GEX_HEAD + len(coh) * row_h + 0.12)
 
@@ -685,6 +696,7 @@ def _draw_gex(fig, W, H, y0, gx, ds, endpoint, ylabel, s, glab, has_ref, row_tit
     fx = lambda x: x / W                                                     # noqa: E731
     fy = lambda y: 1 - y / H                                                 # noqa: E731
     gene, L = gx["gene"], gx["L"]
+    row_title = gx.get("row_title", row_title)              # with the expression rows' own PH line
     fig.add_artist(Line2D([fx(0.12), fx(W - 0.12)], [fy(y0 + 0.06)] * 2, color=S.GRID, lw=0.6))
     fig.text(fx(0.12), fy(y0 + 0.12), "Host-gene expression", fontsize=7.6, fontweight="bold", ha="left", va="top")
     fig.text(fx(0.12 + S.text_width("Host-gene expression", 7.6, weight="bold") + 0.06), fy(y0 + 0.12),
@@ -808,6 +820,8 @@ def _km_view(fig, ax, ds, e, c, v, v_, endpoint, ylabel, s, rows, printed, tag, 
                 dict(panel="printed", tag=tag, what="log-rank p", value=v_["km_p"], source="survival.km_p"),
                 dict(panel="printed", tag=tag, what="log-rank q (BH within gene)", value=_get(v_, "km_q"),
                      source="survival.km_q"),
+                dict(panel="printed", tag=tag, what="KM proportional-hazards p", value=_get(v_, "km_ph_p"),
+                     source="survival.km_ph_p"),
                 dict(panel="printed", tag=tag, what="events high arm", value=int(v_["events_high"]),
                      source="survival.events_high"),
                 dict(panel="printed", tag=tag, what="events low arm", value=int(v_["events_low"]),

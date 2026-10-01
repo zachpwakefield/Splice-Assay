@@ -47,7 +47,9 @@ class Settings:
                                       # narrow PSI range: its HR covers a few PSI points (a note only; 0 = never)
     narrow_psi_measure: str = "iqr"   # the spread checked: "iqr" (the unit of the HR) or "sd"
     ci_z: float = 1.96                # normal quantile of every 95% interval the package computes
-    ph_test: bool = True              # add the proportional-hazards test p of the PSI term
+    ph_test: bool = True              # proportional-hazards (Schoenfeld) tests of every Cox term and of the KM split
+    ph_note_below: float = 0.05       # a PH test p below this adds a note on the page and in the tables; the result
+                                      # stands (0 = never)
     time_unit: str = "days"           # unit of survival.time: days, months or years
     days_per_year: float = 365.25
     # ------------------------------------------------------------------ numerics
@@ -76,7 +78,7 @@ class Settings:
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"Settings.{name} must lie in (0, 1]")
         for name in ("min_abs_delta", "low_psi_variance_sd", "gex_min_abs_delta", "cox_events_per_term",
-                     "narrow_psi_below"):
+                     "narrow_psi_below", "ph_note_below"):
             if getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be >= 0")
         for name in ("psi_step", "ci_z", "days_per_year", "km_max_years", "km_tick_years", "nr_refit_step_size"):

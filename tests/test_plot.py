@@ -163,3 +163,16 @@ def test_long_model_notes_wrap_and_are_cut():
     lines = _model_lines(text, 2.5, 5.6)
     assert len(lines) == MODEL_LINES and lines[-1].endswith(" …")
     assert _model_lines("PSI + host expression", 2.5, 5.6) == ["PSI + host expression"]
+
+
+def test_km_header_notes_non_proportional_hazards():
+    from matplotlib.figure import Figure
+    from splice_assay.plot import km as K
+    rng = np.random.default_rng(0)
+    t, e, high = rng.exponential(3, 60), (rng.uniform(size=60) < 0.7).astype(int), rng.uniform(size=60) > 0.5
+    row = dict(logrank_hr=1.5, km_p=0.01, events_high=int(e[high].sum()), events_low=int(e[~high].sum()), cutoff=0.5)
+    for ph, shown in ((0.003, True), (0.4, False)):
+        fig = Figure(figsize=(3, 3))
+        ax = fig.add_axes([0.2, 0.3, 0.7, 0.5])
+        K.draw(fig, ax, t, e, high, dict(row, km_ph_p=ph), "Overall survival", [], "t", sa.Settings())
+        assert any("non-proportional hazards (p 0.003)" in x.get_text() for x in ax.texts) == shown

@@ -153,7 +153,7 @@ def test_flags_are_reported(ds, tmp_path):
     a = t[t.adj_cox_status.eq("tested")]
     assert len(a) and a.adj_psi_narrow.astype(bool).all() and a.adj_cox_events_per_term.notna().all()
     rep = (tmp_path / "report.md").read_text()
-    assert "## Flags on the Cox fits" in rep and f"{len(t)} of {len(t)} base-model fits" in rep
+    assert "## Notes on the survival tests" in rep and f"{len(t)} of {len(t)} base-model fits" in rep
 
 
 def test_page_parts_are_balanced():

@@ -16,7 +16,9 @@ Low variance      SD(PSI) < low_psi_variance_sd stops the tests ('low_psi_varian
 Rare levels       a category with fewer than level_min_patients patients (or no events) in the fit cohort merges
                   into its neighbour before the fit (stage I into 'I–II'); cox_notes lists each merge.
 Flags             notes only, the fit runs: fewer events per estimated term than cox_events_per_term (overfit
-                  risk), and a PSI spread (IQR or SD) in the fit cohort below narrow_psi_below (narrow PSI range).
+                  risk), a PSI spread (IQR or SD) in the fit cohort below narrow_psi_below (narrow PSI range), and
+                  a proportional-hazards test below ph_note_below for any model term (cox_notes) or for the KM
+                  split (km_notes). The PH tests are Schoenfeld tests on the Kaplan-Meier time scale (lifelines).
 Failed fits       any lifelines convergence warning, an exception, a non-finite estimate or se <= 0 marks the fit
                   'failed' (no estimate is reported). A Newton-Raphson failure is refitted once with a smaller step.
 Expression        `expression_cell` runs the same KM and Cox on host-gene expression itself (Cox: z(expression) +
@@ -131,14 +133,15 @@ def _fit_once(df, strata, term, extra, ph, step_size) -> tuple[dict, bool]:
     if msgs or not np.all(np.isfinite([out["beta"], out["se"]])) or not out["se"] > 0:
         return _failed(out), nr
     out["summary"] = s[["coef", "se(coef)", "p"]].copy()
-    if ph and not strata:
+    if ph:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 res = proportional_hazard_test(cph, df, time_transform="km")
                 out["ph_p"] = float(res.summary.loc[term, "p"])
+                out["ph_terms"] = {str(k): float(v) for k, v in res.summary["p"].items()}
         except Exception:  # noqa: BLE001
-            out["ph_p"] = NAN
+            out["ph_p"], out["ph_terms"] = NAN, {}
     return dict(out, status="tested"), False
 
 
@@ -278,6 +281,43 @@ def _clinical_design(df: pd.DataFrame, meta: list, notes: list, Cf: pd.DataFrame
     return strata_cols
 
 
+def km_ph_test(t: np.ndarray, e: np.ndarray, high: np.ndarray) -> float:
+    """Proportional-hazards test of the KM split: the Schoenfeld test (Kaplan-Meier time scale) of a Cox model on the
+    high-arm indicator. A small p means the hazard ratio between the arms changes over follow-up (e.g. curves that
+    cross), which the log-rank test averages over. NaN when it cannot be computed."""
+    from lifelines import CoxPHFitter
+    from lifelines.statistics import proportional_hazard_test
+    df = pd.DataFrame({"time": np.asarray(t, float), "event": np.asarray(e, int), "high": np.asarray(high, float)})
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cph = CoxPHFitter(penalizer=0.0).fit(df, duration_col="time", event_col="event")
+            return float(proportional_hazard_test(cph, df, time_transform="km").summary.loc["high", "p"])
+    except Exception:  # noqa: BLE001
+        return NAN
+
+
+def _ph_note(fit: dict, meta: list, s: Settings) -> list[str]:
+    """A note naming the model terms whose proportional-hazards test has p below ph_note_below (the fit stands)."""
+    if not s.ph_note_below > 0:
+        return []
+    ph = fit.get("ph_terms") or {}
+    bad = [(m, ph[m["column"]]) for m in meta if m["column"] in ph and ph[m["column"]] < s.ph_note_below]
+    if not bad:
+        return []
+    from ..plot.style import fp
+    name = (lambda m: m["term"] + (f" {m['level']}" if m["level"] else ""))
+    return [f"non-proportional hazards: {', '.join(f'{name(m)} (p {fp(p)})' for m, p in bad)}"]
+
+
+def _km_ph(r: dict, t, e, high, s: Settings) -> None:
+    """The KM split's proportional-hazards p (km_ph_p) and its note (km_notes) on a tested KM row."""
+    r["km_ph_p"] = km_ph_test(t, e, high) if s.ph_test else NAN
+    if s.ph_note_below > 0 and r["km_ph_p"] < s.ph_note_below:
+        from ..plot.style import fp
+        r["km_notes"] = f"non-proportional hazards between the arms (p {fp(r['km_ph_p'])})"
+
+
 def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None) -> list[str]:
     """Notes on a fitted model, which runs anyway: fewer events per estimated term than cox_events_per_term (an
     overfit risk), and, for PSI, a spread in the fit cohort below narrow_psi_below (the HR covers a few PSI points).
@@ -297,11 +337,13 @@ def _terms(fit: dict, meta: list, s: Settings) -> tuple[list[dict], list[str]]:
     """Every term of a fitted model (HR and CI per its unit), and the unstable ones (se > 3)."""
     terms, unstable = [], []
     summ = fit["summary"]
+    ph = fit.get("ph_terms") or {}
     for m in meta:
         c, sei, p = (float(summ.loc[m["column"], k_]) for k_ in ("coef", "se(coef)", "p"))
         with np.errstate(over="ignore"):
             terms.append(dict({k_: v for k_, v in m.items() if k_ != "column"}, coef=c, se=sei, hr=float(np.exp(c)),
-                              ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p))
+                              ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p,
+                              ph_p=ph.get(m["column"], NAN)))
         if m["kind"] not in ("psi", "gex") and sei > 3:     # a sparse level or a nearly separated covariate
             unstable.append(f"{m['term']}{' ' + m['level'] if m['level'] else ''}")
     return terms, unstable
@@ -346,6 +388,7 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
         lr = logrank(t, e, high)
         r.update(km_status="tested", o_high=lr["o_high"], e_high=lr["e_high"], o_low=lr["o_low"], e_low=lr["e_low"],
                  km_var=lr["var"], km_chi2=lr["chi2"], km_p=lr["p"], logrank_hr=lr["logrank_hr"])
+        _km_ph(r, t, e, high, s)
     # ---------------------------------------------------------------- Cox: the fit cohort
     need = model.clinical_columns
     if need and clinical is None:
@@ -407,18 +450,21 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     terms = []
     summ = fit["summary"]
     unstable = []
+    ph = fit.get("ph_terms") or {}
     for m in meta:
         c, sei, p = (float(summ.loc[m["column"], k_]) for k_ in ("coef", "se(coef)", "p"))
         with np.errstate(over="ignore"):
             terms.append(dict({k_: v for k_, v in m.items() if k_ != "column"}, coef=c, se=sei, hr=float(np.exp(c)),
-                              ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p))
+                              ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p,
+                              ph_p=ph.get(m["column"], NAN)))
         if m["kind"] == "psi":
             terms.append(dict(term="PSI", kind="psi_iqr", level="", reference="",
                               unit=f"IQR ({r['psi_iqr']:.3g} PSI)", coef=c * k, se=sei * k, hr=r["hr_per_iqr"],
-                              ci_low=r["ci_low_iqr"], ci_high=r["ci_high_iqr"], p=p))
+                              ci_low=r["ci_low_iqr"], ci_high=r["ci_high_iqr"], p=p, ph_p=ph.get(m["column"], NAN)))
         elif sei > 3:                                       # a sparse level or a nearly separated covariate
             unstable.append(f"{m['term']}{' ' + m['level'] if m['level'] else ''}")
     flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_psi_measure == "iqr" else r["psi_sd"])
+    flags += _ph_note(fit, meta, s)
     r["cox_notes"] = "; ".join(x for x in [r.get("cox_notes", "")] + flags
                                + ([f"unstable: {', '.join(unstable)} (se > 3)"] if unstable else []) if x)
     return r, terms
@@ -460,6 +506,7 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
         lr = logrank(t, e, high)
         r.update(km_status="tested", o_high=lr["o_high"], e_high=lr["e_high"], o_low=lr["o_low"], e_low=lr["e_low"],
                  km_var=lr["var"], km_chi2=lr["chi2"], km_p=lr["p"], logrank_hr=lr["logrank_hr"])
+        _km_ph(r, t, e, high, s)
     # ---------------------------------------------------------------- Cox
     need = model.clinical_columns
     if need and clinical is None:
@@ -498,7 +545,7 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     r.update(cox_beta=b, cox_se=se, cox_p=fit["p"], hr_per_sd=float(np.exp(b)), ci_low_sd=float(np.exp(b - s.ci_z * se)),
              ci_high_sd=float(np.exp(b + s.ci_z * se)), ph_p=fit.get("ph_p", NAN))
     terms, unstable = _terms(fit, meta, s)
-    flags = _fit_flags(r, len(meta), s)
+    flags = _fit_flags(r, len(meta), s) + _ph_note(fit, meta, s)
     r["cox_notes"] = "; ".join(x for x in [r["cox_notes"]] + flags
                                + ([f"unstable: {', '.join(unstable)} (se > 3)"] if unstable else []) if x)
     return r, terms

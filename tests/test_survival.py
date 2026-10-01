@@ -198,3 +198,32 @@ def test_flags_note_few_events_per_term_and_a_narrow_psi_range():
     assert f"narrow PSI range (SD {r3['psi_sd']:.3f} < 0.5)" in r3["cox_notes"]
     r4, _ = survival_cell(x, pos, t, e, None, Settings(cox_events_per_term=0, narrow_psi_below=0))
     assert r4["cox_notes"] == "" and not r4["psi_narrow"]
+
+
+def crossing(seed=4, n=400):
+    """PSI whose effect reverses over follow-up: the high arm has a high hazard for a year, then a low one."""
+    rng = np.random.default_rng(seed)
+    x = np.round(rng.uniform(0, 1, n), 3)
+    u = rng.exponential(size=n)                                     # cumulative hazard at the event
+    t = np.where(x > 0.5, np.where(u < 2.0, u / 2.0, 1.0 + (u - 2.0) / 0.1), u / 0.5)
+    c = rng.uniform(0.2, 6, n)
+    return x, np.arange(n), np.round(np.minimum(t, c) * 365.25) + 1, (t <= c).astype(int)
+
+
+def test_proportional_hazards_are_noted_not_enforced():
+    x, pos, t, e = crossing()
+    r, terms = survival_cell(x, pos, t, e, None, S)
+    assert r["km_status"] == "tested" and r["cox_status"] == "tested"
+    assert r["km_ph_p"] < 0.05 and r["km_notes"].startswith("non-proportional hazards between the arms (p ")
+    assert r["ph_p"] < 0.05 and "non-proportional hazards: PSI (p " in r["cox_notes"]
+    assert all(np.isfinite(term["ph_p"]) for term in terms)
+    quiet, _ = survival_cell(x, pos, t, e, None, Settings(ph_note_below=0))
+    assert quiet["km_p"] == r["km_p"] and quiet["cox_p"] == r["cox_p"] and quiet["ph_p"] == r["ph_p"]
+    assert "km_notes" not in quiet and "non-proportional" not in quiet["cox_notes"]
+
+
+def test_stratified_models_get_a_proportional_hazards_test(ds):
+    import splice_assay as sa
+    m = CoxModel(covariates=("age",), strata=("sex",))
+    res = sa.analyse(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
+    assert np.isfinite(res.survival.iloc[0].ph_p) and res.cox_terms.ph_p.notna().all()
