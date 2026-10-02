@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.0 (unreleased)
+## 0.1.0 (2026-10-02)
 
 First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript matcher it ports).
 - **Input contract.** Plain tables (CSV, TSV or Parquet): samples, psi (long or wide), events, survival (long or wide,

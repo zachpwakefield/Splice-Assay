@@ -15,21 +15,27 @@ its splicing pages, with the same views (tumour vs normal, KM, Cox on expression
 Events can be rMATS types (SE, RI, A3SS, A5SS, MXE) or HITindex's alternative first and last exons and HIT index
 (AFE, ALE, HIT).
 
-![Example panel](docs/example_panel.png)
+![Example panel](https://raw.githubusercontent.com/zachpwakefield/Splice-Assay/main/docs/example_panel.png)
 
 *The example uses simulated data: `splice-assay example demo/`.*
 
 ## Guides
 
-- [Reading the results, panel by panel](docs/reading-results.md): every part of a page, the probe's report and
+- [Reading the results, panel by panel](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/reading-results.md): every part of a page, the probe's report and
   tables, and a reading order.
-- [Getting the annotation cache from SpliceImpactR](docs/annotation-cache.md): what the protein suggestions need,
+- [Getting the annotation cache from SpliceImpactR](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/annotation-cache.md): what the protein suggestions need,
   and how to build it.
-- [Methods](docs/methods.md): every statistic and threshold.
-- [Protein suggestions](docs/proteins.md): how events are matched to transcripts, and what the band shows.
-- [Agent guide](AGENT_GUIDE.md): the steps from data to report, for agents and new users.
+- [Methods](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md): every statistic and threshold.
+- [Protein suggestions](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md): how events are matched to transcripts, and what the band shows.
+- [Agent guide](https://github.com/zachpwakefield/Splice-Assay/blob/main/AGENT_GUIDE.md): the steps from data to report, for agents and new users.
 
 ## Install
+
+```bash
+pip install splice-assay
+```
+
+The latest code on GitHub:
 
 ```bash
 pip install "splice-assay @ git+https://github.com/zachpwakefield/Splice-Assay"
@@ -66,7 +72,7 @@ splice-assay panel demo/data --event SYN1:SE:1 --cohort COH1 --cohort COH2 --end
 splice-assay analyse demo/data --out results/  # statistics for every event x cohort x endpoint, as CSV
 ```
 
-An agent (or a new user) should read [AGENT_GUIDE.md](AGENT_GUIDE.md): the steps from data to report, how to read a
+An agent (or a new user) should read [AGENT_GUIDE.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/AGENT_GUIDE.md): the steps from data to report, how to read a
 probe, and what not to claim.
 
 In Python:
@@ -230,7 +236,7 @@ per-sample outputs looks like this; `splice-assay example` writes three in `demo
   with their event columns (`--separate`: `events.csv` and a long `psi.csv`).
 - **Values.** AFE and ALE values are PSI: the exon's use among the gene's first (last) exons. The HIT index (−1 to 1)
   is not PSI and has its own rules: no 0/1 check, and a hit needs |Δ| > 0.20 (`hit_min_abs_delta`). Pages say "HIT
-  index" where they would say PSI. See [docs/methods.md](docs/methods.md#event-types-and-their-values).
+  index" where they would say PSI. See [docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md#event-types-and-their-values).
 - **The HIT index is left out by default.** HITindex reports it for every exon of every gene, a far larger set than
   the splicing events, so `analyse` and `probe` skip HIT events unless `--include-hit` (`include_hit=True`). A HIT
   event named with `--event` is always analysed and drawn. HIT-index events form q families of their own, so
@@ -283,8 +289,8 @@ splice-assay proteins data/ --gene FNBP1      # e.g. "inclusion adds 61 aa in fr
 ```
 
 These are suggestions read from annotation; an event without a good match is not shown. The example writes a small
-synthetic cache (`demo/proteins/`). [docs/annotation-cache.md](docs/annotation-cache.md) shows how to build the real
-one with SpliceImpactR. [docs/proteins.md](docs/proteins.md) covers the matching, the cache format for other
+synthetic cache (`demo/proteins/`). [docs/annotation-cache.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/annotation-cache.md) shows how to build the real
+one with SpliceImpactR. [docs/proteins.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md) covers the matching, the cache format for other
 annotation, and checks against SpliceImpactR.
 
 ## Defaults (nothing needs to be chosen)
@@ -374,7 +380,7 @@ The pages print q beside p and name the family in a footnote. Families of fewer 
 events, when included, form families of their own. A `*` marks each q below 0.05: after the q itself, after the
 forest's CI and after the tested term's p in the model rows, and in the probe overview. It is separate from the
 filled markers, which show p < 0.05. The `q_mark_below` setting changes the threshold (0 = no marks). Hit rules, filled markers and the probe ranking stay on p. Details:
-[docs/methods.md](docs/methods.md#multiple-testing-q-values).
+[docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md#multiple-testing-q-values).
 
 ## Host-gene expression page
 
@@ -397,12 +403,12 @@ models already adjust PSI for expression.
 
 ## Outputs
 
-- **Statistics.** `analyse` writes three tables. Every column is defined in [docs/methods.md](docs/methods.md).
+- **Statistics.** `analyse` writes three tables. Every column is defined in [docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md).
   - `group_tests.csv`: one row per event × cohort.
   - `survival.csv`: one row per event × cohort × endpoint.
   - `cox_terms.csv`: one row per model term.
 - **Protein changes.** With a protein cache, `proteins --out` and the probe's `proteins.csv` hold one row per event
-  (see [docs/proteins.md](docs/proteins.md)).
+  (see [docs/proteins.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md)).
 - **Figures.** `panel` and `cox` write four kinds of file:
   - `<stem>.svg`, `.pdf` and `.png` (400 dpi);
   - `<stem>.csv`, with every plotted value;
@@ -442,10 +448,10 @@ with a JSON file (`--settings my.json`) or in Python (`sa.Settings(min_pairs=5)`
   beside them; hits, filled markers and the probe ranking use p.
 - **Causality.** Cox models describe association; they do not establish causation.
 - **Patient-level data.** None is shipped; the example is simulated.
-- **Protein changes.** Suggestions from annotated isoforms, not measurements (see [docs/proteins.md](docs/proteins.md)).
+- **Protein changes.** Suggestions from annotated isoforms, not measurements (see [docs/proteins.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md)).
 
 ## Citation and licence
 
-- **Licence.** GNU General Public License, version 3 only ([LICENSE](LICENSE)), as for SpliceImpactR, whose
+- **Licence.** GNU General Public License, version 3 only ([LICENSE](https://github.com/zachpwakefield/Splice-Assay/blob/main/LICENSE)), as for SpliceImpactR, whose
   transcript matcher the protein layer ports.
 - **Citation.** A citation file will follow; until then, cite this repository.
