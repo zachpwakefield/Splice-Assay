@@ -247,3 +247,31 @@ def test_q_marks(ds, tmp_path):
     fig = overview(res.cells, res.events, "OS", s)
     assert any(t.get_text() == "*" for a in fig.axes for t in a.texts)
     assert "*: q < 0.05" in " ".join(t.get_text() for t in fig.texts)
+
+
+def test_hr_per_sd_on_the_pages(ds, tmp_path, capsys):
+    """psi_hr_unit = "sd" (--hr-unit sd) shows the HR per SD in the forest, the model rows, the probe and its report."""
+    from splice_assay.cli import main
+    from splice_assay.probe import probe
+    s = FAST.replace(psi_hr_unit="sd")
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s, detail=sa.CoxModel().with_clinical(("age",)))
+    assert "HR per SD\nof PSI (95% CI)" in [a.get_xlabel() for a in p.figure.axes]
+    f = p.table[p.table.panel.eq("forest")]
+    assert "hr_per_sd" in f and "hr_per_iqr" not in f and f.hr_per_sd.notna().any()
+    assert any(str(x).startswith("PSI (per SD, ") for x in p.table[p.table.panel.eq("cox_detail")].label)
+    res = probe(ds, genes=["SYN1"], settings=s, adjusted=None, out_dir=tmp_path / "p", max_pages=1,
+                log=lambda *_: None)
+    assert "best_hr_per_sd" in res.events and "| HR per SD | p |" in res.paths["report"].read_text()
+    from splice_assay import example
+    example.write(tmp_path / "ex")
+    assert main(["probe", str(tmp_path / "ex" / "data"), "--gene", "SYN2", "--hr-unit", "sd", "--no-adjust",
+                 "--out", str(tmp_path / "cli"), "--max-pages", "1", "--settings", str(_fast_json(tmp_path))]) == 0
+    import pandas as pd
+    assert "best_hr_per_sd" in pd.read_csv(tmp_path / "cli" / "events.csv").columns
+    capsys.readouterr()
+
+
+def _fast_json(tmp_path):
+    p = tmp_path / "fast.json"
+    p.write_text('{"formats": ["png"], "dpi": 60}')
+    return p

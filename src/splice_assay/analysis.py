@@ -108,8 +108,8 @@ SV_FIRST = ["event_id", "gene", "cohort", "endpoint", "n_survival", "n_obs", "fr
             "cutoff", "km_split", "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr",
             "km_p", "km_q", "cox_model", "cox_status", "cox_n", "cox_events", "psi_iqr", "cox_beta", "cox_se", "cox_p",
             "cox_q", "hr_per_step",
-            "ci_low_step", "ci_high_step", "hr_per_iqr", "ci_low_iqr", "ci_high_iqr", "cox_events_per_term",
-            "psi_narrow", "ph_p", "km_ph_p", "km_notes"]
+            "ci_low_step", "ci_high_step", "hr_per_iqr", "ci_low_iqr", "ci_high_iqr", "psi_sd", "hr_per_sd",
+            "ci_low_sd", "ci_high_sd", "cox_events_per_term", "psi_narrow", "ph_p", "km_ph_p", "km_notes"]
 
 
 def event_settings(event_type, s: Settings) -> Settings:

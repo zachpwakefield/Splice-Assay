@@ -81,7 +81,8 @@ stage).
 - **Header.** Patients and events in the fit, and the q of the PSI term. The second line gives the model, with any
   notes in brackets (next section).
 - **Rows.** Each term's HR with its 95% CI and p, on one shared axis.
-  - PSI is per IQR of PSI in this cohort (bold, diamond). Host expression and age are per SD. Categories are against
+  - PSI is per IQR of PSI in this cohort (bold, diamond), or per SD with `--hr-unit sd`. Host expression and age are
+    per SD. Categories are against
     the reference level named.
   - Filled markers have p < 0.05.
   - A † after a row's p: that term failed the proportional-hazards test (p < 0.05), so its HR is an average over
@@ -113,7 +114,7 @@ stage).
 
 - **Left.** The median PSI difference (tumour − normal) in every cohort with a test. Filled circles are within
   patients, open circles all samples. Dotted lines mark the ±0.10 effect threshold.
-- **Right.** The HR per IQR of PSI with its 95% CI, from the base model (PSI + host expression, written under the
+- **Right.** The HR per IQR (or per SD) of PSI with its 95% CI, from the base model (PSI + host expression, written under the
   axis), so all cohorts are compared under one model.
   - Filled diamonds have p < 0.05.
   - Arrowheads mark a CI that runs off the axis.

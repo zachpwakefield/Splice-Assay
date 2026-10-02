@@ -250,11 +250,14 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                 d[f"{design}_p"] = float(_get(t_, f"{design}_p")) if st == "tested" else NAN
             d["paired_n"] = _get(t_, "paired_n_pairs")
             ok = v_.cox_status == "tested"
-            for k_out, k_in in (("hr", "hr_per_iqr"), ("lo", "ci_low_iqr"), ("hi", "ci_high_iqr"), ("cox_p", "cox_p"),
-                                ("cox_q", "cox_q"), ("cox_beta", "cox_beta"), ("cox_se", "cox_se"), ("ph_p", "ph_p")):
+            u = s.psi_hr_unit                               # the HR per IQR, or per SD
+            for k_out, k_in in (("hr", f"hr_per_{u}"), ("lo", f"ci_low_{u}"), ("hi", f"ci_high_{u}"),
+                                ("cox_p", "cox_p"), ("cox_q", "cox_q"), ("cox_beta", "cox_beta"), ("cox_se", "cox_se"),
+                                ("ph_p", "ph_p")):
                 d[k_out] = float(_get(v_, k_in)) if ok else NAN
-            for k in ("cox_n", "cox_events", "psi_iqr"):
+            for k in ("cox_n", "cox_events"):
                 d[k] = _get(v_, k)
+            d["spread"] = _get(v_, f"psi_{u}")
             recs.append(d)
         recs_by[c] = recs
 
@@ -409,7 +412,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
             rows.append(dict(panel="focus_cell", tag=tag, endpoint=endpoint, event_id=e, cohort=c, label=mark,
                              paired_hit=_get(t_, "paired_hit"), unpaired_hit=_get(t_, "unpaired_hit"),
                              within_patient_support=_get(t_, "within_patient_support"),
-                             km_p=_get(v_, "km_p"), cox_p=_get(v_, "cox_p"), hr_per_iqr=_get(v_, "hr_per_iqr")))
+                             km_p=_get(v_, "km_p"), cox_p=_get(v_, "cox_p"),
+                             **{f"hr_per_{s.psi_hr_unit}": _get(v_, f"hr_per_{s.psi_hr_unit}")}))
         # ------------------------------------------------------------------ forest
         f_top = y_main + (main_h + 0.20 if stacked else 0.0)       # below the rows when stacked
         fy0, fh = fy(f_top + 0.25 + forest_h), forest_h / H
@@ -417,11 +421,12 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         axR = fig.add_axes([fx(L["axR"][0]), fy0, fx(L["axR"][1]), fh])
         lim, xlo, xhi, n_clip = F.axis_limits(recs_by)
         F.set_axes(axL, axR, lim, xlo, xhi, s_ev.min_abs_delta, glab, model_note, quantity=qty,
-                   hr_label=f"HR per IQR\nof {qty} (95% CI)")
+                   hr_label=f"HR per {s.psi_hr_unit.upper()}\nof {qty} (95% CI)")
         F.draw(fig, axL, axR, fx(L["lab_x"]), fx(L["mark_x"]), fcoh, recs_by, n_ev, s.alpha, cox_name, mark_colors,
                ph_below=s.ph_note_below, q_below=s.q_mark_below)
         rows.append(dict(panel="forest_axis", hr_axis_low=xlo, hr_axis_high=xhi, n_ci_clipped=n_clip,
                          cox_model=model_note))
+        u = s.psi_hr_unit
         for c in fcoh:
             for r in recs_by[c]:
                 rows.append(dict(panel="forest", endpoint=endpoint, event_id=r["event_id"], cohort=c, label=r["mark"],
@@ -429,9 +434,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                  paired_delta_median=r["paired_delta"], paired_p=r["paired_p"],
                                  unpaired_status=r["unpaired_status"], unpaired_delta_median=r["unpaired_delta"],
                                  unpaired_p=r["unpaired_p"], cox_status=r["cox_status"], cox_n=r["cox_n"],
-                                 cox_events=r["cox_events"], psi_iqr=r["psi_iqr"], cox_beta=r["cox_beta"],
-                                 cox_se=r["cox_se"], hr_per_iqr=r["hr"], ci_low_iqr=r["lo"], ci_high_iqr=r["hi"],
-                                 cox_p=r["cox_p"], cox_q=r["cox_q"],
+                                 cox_events=r["cox_events"], cox_beta=r["cox_beta"], cox_se=r["cox_se"],
+                                 **{f"psi_{u}": r["spread"], f"hr_per_{u}": r["hr"], f"ci_low_{u}": r["lo"],
+                                    f"ci_high_{u}": r["hi"]}, cox_p=r["cox_p"], cox_q=r["cox_q"],
                                  q_marked=bool(s.q_mark_below > 0 and r["cox_q"] < s.q_mark_below)))
         head_y = fy(f_top + 0.25 - 0.04)
         if marks and highlight_title:

@@ -15,7 +15,7 @@ from . import style as S
 from .panel_common import ENDPOINT_NAMES, Panel, safe_name
 
 MODEL_NOTE = "Filled: p < {alpha:g}. Numeric covariates per SD of the fit cohort; categories against the level named."
-MAIN = ("psi_iqr", "gex")                                 # the tested term of a model: drawn bold, with a diamond
+MAIN = ("psi_iqr", "psi_sd", "gex")                      # the tested term of a model: drawn bold, with a diamond
 
 
 def model_terms(ds: Dataset, event: str, cohort: str, endpoint: str, model: CoxModel | None = None,
@@ -37,15 +37,17 @@ def model_terms(ds: Dataset, event: str, cohort: str, endpoint: str, model: CoxM
 
 
 def display_rows(terms: pd.DataFrame, q: float = np.nan) -> list[dict]:
-    """The rows of a model forest: PSI per IQR, host expression and numeric covariates per SD, and each categorical
-    covariate as a header with one indented row per level. `q`: the tested PSI term's q, kept on its row."""
+    """The rows of a model forest: PSI per IQR (or per SD, Settings.psi_hr_unit), host expression and numeric
+    covariates per SD, and each categorical covariate as a header with one indented row per level. `q`: the tested
+    PSI term's q, kept on its row."""
     out = []
     for r in terms.itertuples():
         if r.kind == "psi":
-            continue                                     # PSI is shown per IQR (its per +0.10 row is in the CSV)
-        if r.kind == "psi_iqr":
-            out.append(dict(label=f"{r.term} (per IQR, {r.unit[5:-1]})", short=f"{r.term} (per IQR)", indent=False,
-                            r=r, q=q))
+            continue                                     # PSI is shown per IQR or SD (its per +0.10 row is in the CSV)
+        if r.kind in ("psi_iqr", "psi_sd"):
+            u = r.kind[4:].upper()
+            out.append(dict(label=f"{r.term} (per {u}, {r.unit[len(u) + 2:-1]})", short=f"{r.term} (per {u})",
+                            indent=False, r=r, q=q))
         elif r.kind == "expression":
             out.append(dict(label="Host expression (per SD)", short="Host expr. (per SD)", indent=False, r=r))
         elif r.kind == "gex":                            # the main term of an expression model

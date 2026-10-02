@@ -23,7 +23,8 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
   - Survival per cohort and endpoint: KM and log-rank, split at the median, the mean or a set value (`km_split`,
     `--km-split`; `km_split_expression` for expression). The KM header names the split ("split at median PSI 0.7705").
   - Cox on PSI adjusted for host expression and any clinical covariates (numeric, categorical, strata), with gates,
-    failure rules and every model term reported.
+    failure rules and every model term reported. The PSI HR is shown per IQR, or per SD with `--hr-unit sd`
+    (`psi_hr_unit`); the tables hold both.
 - **Event panel.**
   - Under the title, one line per event: what it is, in 1-based coordinates, and what its value measures.
   - Schematic: a collapsed gene model from a GTF (windowed for long genes) and nested snoRNAs.

@@ -55,6 +55,8 @@ class Settings:
     low_psi_variance_sd: float = 0.002  # no survival test when SD(PSI) of the cohort is below this
     nr_refit_step_size: float = 0.5   # a Newton-Raphson failure is refitted once with this step size
     psi_step: float = 0.10            # the Cox coefficient is per +0.10 PSI
+    psi_hr_unit: str = "iqr"          # the PSI (or HIT index) hazard ratio shown: per "iqr" or per "sd" of the fit
+                                      # cohort's values (the tables hold both)
     covariate_min_complete: float = 0.8  # a clinical variable recorded for fewer of a cohort's patients is left out
                                          # of that cohort's model (else it would shrink the cohort)
     level_min_patients: int = 10      # a category of a clinical covariate with fewer patients (or no events) in a
@@ -63,7 +65,7 @@ class Settings:
                                        # risk (a note only; 0 = never)
     narrow_psi_below: float = 0.05    # a Cox fit whose PSI spread in the fit cohort is below this is flagged as a
                                       # narrow PSI range: its HR covers a few PSI points (a note only; 0 = never)
-    narrow_psi_measure: str = "iqr"   # the spread checked: "iqr" (the unit of the HR) or "sd"
+    narrow_psi_measure: str | None = None  # the spread checked: "iqr" or "sd" (default: psi_hr_unit, the HR's unit)
     ci_z: float = 1.96                # normal quantile of every 95% interval the package computes
     ph_test: bool = True              # proportional-hazards (Schoenfeld) tests of every Cox term and of the KM split
     ph_note_below: float = 0.05       # a PH test p below this adds a note on the page and in the tables; the result
@@ -105,8 +107,10 @@ class Settings:
                 raise ValueError(f"Settings.{name} must be > 0")
         for name in ("km_split", "km_split_expression"):
             object.__setattr__(self, name, _split_rule(getattr(self, name), name))
-        if self.narrow_psi_measure not in ("iqr", "sd"):
+        if self.narrow_psi_measure not in (None, "iqr", "sd"):
             raise ValueError('Settings.narrow_psi_measure must be "iqr" or "sd"')
+        if self.psi_hr_unit not in ("iqr", "sd"):
+            raise ValueError('Settings.psi_hr_unit must be "iqr" or "sd"')
         if self.time_unit not in TIME_UNITS:
             raise ValueError(f"Settings.time_unit must be one of {sorted(TIME_UNITS)}")
         bad = set(self.formats) - {"svg", "pdf", "png"}
@@ -116,6 +120,11 @@ class Settings:
             object.__setattr__(self, name, tuple(getattr(self, name)))
 
     # ------------------------------------------------------------------ helpers
+    @property
+    def narrow_measure(self) -> str:
+        """The spread the narrow-range note checks: narrow_psi_measure, else the HR's unit."""
+        return self.narrow_psi_measure or self.psi_hr_unit
+
     def replace(self, **changes) -> "Settings":
         return replace(self, **changes)
 

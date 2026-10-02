@@ -206,7 +206,8 @@ splice-assay panel DATA --event EVENT_ID [--cohort A --cohort B ...] [--gtf ...]
 - **Name the model.** Say which model a number comes from (base or adjusted) and the endpoint, e.g. "HR per IQR
   1.44 (95% CI 1.11–1.87), p 0.005, Cox with host expression, age, sex and stage, LUAD, OS".
 - **What HR per IQR means.** It is the hazard ratio between a patient at the 75th and one at the 25th percentile of
-  PSI in that cohort, other terms fixed. HR > 1 means higher PSI goes with worse survival.
+  PSI in that cohort, other terms fixed. HR > 1 means higher PSI goes with worse survival. With `--hr-unit sd` the
+  pages show the HR per SD of PSI instead; say which unit a number uses.
 - **Markers.** Filled markers mean p < 0.05; a `*` means q < 0.05 within the gene's family. Say which one a claim
   rests on.
 - **Chance.** State how many tests were run and how many p < 0.05 chance predicts. Quote q only with its family:
@@ -238,7 +239,8 @@ splice-assay panel DATA --event EVENT_ID [--cohort A --cohort B ...] [--gtf ...]
 | Missing covariate | left out of a cohort's model below 80% recorded | settings `covariate_min_complete` |
 | Rare category | merged into its neighbour below 10 patients or with no deaths | settings `level_min_patients` |
 | Overfit-risk note | below 10 events per model term | settings `cox_events_per_term` |
-| Narrow-PSI note | PSI IQR below 0.05 in the fit cohort (or SD) | settings `narrow_psi_below`, `narrow_psi_measure` |
+| PSI hazard ratio | per IQR | `--hr-unit sd` (per SD; the tables hold both) |
+| Narrow-PSI note | PSI spread below 0.05 in the fit cohort, in the HR's unit | settings `narrow_psi_below`, `narrow_psi_measure` |
 | Tests | 10 pairs; 10 per group; KM 10 per arm and 10 events; Cox 30 patients and 20 events | `--settings file.json` |
 | GTF | none (no gene track) | `--gtf` or `$SPLICE_ASSAY_GTF` |
 | Protein cache | none (no protein band) | `--proteins` or `$SPLICE_ASSAY_PROTEINS` |

@@ -12,7 +12,8 @@ Cox               h(t) = h0(t) exp(b * PSI/0.10 + g * z(host expression) + covar
                   (lifelines). Host expression enters when an expression table is given (CoxModel.expression);
                   clinical covariates when named (CoxModel). Patients missing any model variable are left out.
                   Needs cox_min_n patients, cox_min_events events and min_off_modal PSI values away from the mode.
-                  HR per IQR = exp(b * IQR/0.10), IQR of PSI over the fit cohort (NaN when the IQR is 0).
+                  HR per IQR = exp(b * IQR/0.10), IQR of PSI over the fit cohort (NaN when the IQR is 0); HR per
+                  SD the same with the SD. Settings.psi_hr_unit picks the one the pages show.
 Low variance      SD(PSI) < low_psi_variance_sd stops the tests ('low_psi_variance').
 Rare levels       a category with fewer than level_min_patients patients (or no events) in the fit cohort merges
                   into its neighbour before the fit (stage I into 'I–II'); cox_notes lists each merge.
@@ -342,7 +343,7 @@ def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None, 
     if spread is not None:
         r["psi_narrow"] = bool(s.narrow_psi_below > 0 and spread < s.narrow_psi_below)
         if r["psi_narrow"]:
-            out.append(f"narrow {quantity} range ({s.narrow_psi_measure.upper()} {spread:.3f} < {s.narrow_psi_below:g})")
+            out.append(f"narrow {quantity} range ({s.narrow_measure.upper()} {spread:.3f} < {s.narrow_psi_below:g})")
     return out
 
 
@@ -456,9 +457,12 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
         return r, []
     b, se, k = fit["beta"], fit["se"], r["psi_iqr"] / s.psi_step
     iqr = (lambda v: float(np.exp(v * k)) if k > 0 else NAN)         # undefined when the IQR is 0
+    k_sd = r["psi_sd"] / s.psi_step
+    sd = (lambda v: float(np.exp(v * k_sd)) if k_sd > 0 else NAN)
     r.update(cox_beta=b, cox_se=se, cox_p=fit["p"], hr_per_step=float(np.exp(b)),
              ci_low_step=float(np.exp(b - s.ci_z * se)), ci_high_step=float(np.exp(b + s.ci_z * se)),
              hr_per_iqr=iqr(b), ci_low_iqr=iqr(b - s.ci_z * se), ci_high_iqr=iqr(b + s.ci_z * se),
+             hr_per_sd=sd(b), ci_low_sd=sd(b - s.ci_z * se), ci_high_sd=sd(b + s.ci_z * se),
              ph_p=fit.get("ph_p", NAN))
     if "gex_z" in df:
         r.update(expr_hr_per_sd=fit["expr_hr"], expr_p=fit["expr_p"])
@@ -472,13 +476,15 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
             terms.append(dict({k_: v for k_, v in m.items() if k_ != "column"}, coef=c, se=sei, hr=float(np.exp(c)),
                               ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p,
                               ph_p=ph.get(m["column"], NAN)))
-        if m["kind"] == "psi":
-            terms.append(dict(term=quantity, kind="psi_iqr", level="", reference="",
-                              unit=f"IQR ({r['psi_iqr']:.3g} {unit})", coef=c * k, se=sei * k, hr=r["hr_per_iqr"],
-                              ci_low=r["ci_low_iqr"], ci_high=r["ci_high_iqr"], p=p, ph_p=ph.get(m["column"], NAN)))
+        if m["kind"] == "psi":                              # the tested term per IQR (or per SD: psi_hr_unit)
+            u, kk = (("iqr", k) if s.psi_hr_unit == "iqr" else ("sd", k_sd))
+            terms.append(dict(term=quantity, kind=f"psi_{u}", level="", reference="",
+                              unit=f"{u.upper()} ({r[f'psi_{u}']:.3g} {unit})", coef=c * kk, se=sei * kk,
+                              hr=r[f"hr_per_{u}"], ci_low=r[f"ci_low_{u}"], ci_high=r[f"ci_high_{u}"], p=p,
+                              ph_p=ph.get(m["column"], NAN)))
         elif sei > 3:                                       # a sparse level or a nearly separated covariate
             unstable.append(f"{m['term']}{' ' + m['level'] if m['level'] else ''}")
-    flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_psi_measure == "iqr" else r["psi_sd"], quantity)
+    flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_measure == "iqr" else r["psi_sd"], quantity)
     flags += _ph_note(fit, meta, s)
     r["cox_notes"] = "; ".join(x for x in [r.get("cox_notes", "")] + flags
                                + ([f"unstable: {', '.join(unstable)} (se > 3)"] if unstable else []) if x)

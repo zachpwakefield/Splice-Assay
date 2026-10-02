@@ -115,6 +115,9 @@ effect is case minus reference (for example tumour minus normal).
     the mode.
   - HR per IQR = exp(β·IQR/0.10), where IQR is the interquartile range of PSI in the fit cohort. Its 95% CI is
     exp((β ± 1.96·se)·IQR/0.10). It is left empty when the IQR is 0.
+  - HR per SD is the same with the SD of PSI in the fit cohort (`hr_per_sd`, `ci_low_sd`, `ci_high_sd`). The tables
+    hold both; `psi_hr_unit` ("iqr", the default, or "sd") picks the one the pages, the probe and its overview show,
+    and the model term in `cox_terms` (`psi_iqr` or `psi_sd`).
   - **Proportional hazards.** Every fit gets lifelines' `proportional_hazard_test`: the Schoenfeld-residual test on
     the Kaplan–Meier time scale, one test per term, stratified models included.
     - `ph_p` is the PSI term's p; `cox_terms.ph_p` holds every term's.
@@ -196,9 +199,9 @@ the gene's expression page; the probe's `expression_cells.csv`).
   - **Overfit risk:** fewer than `cox_events_per_term` (10) events per estimated term. Terms are the PSI, expression
     and covariate coefficients, one per level beyond the reference; strata do not count. The value is
     `cox_events_per_term` in the tables.
-  - **Narrow PSI range:** the PSI spread in the fit cohort is below `narrow_psi_below` (0.05), so the HR per IQR
-    describes a change of a few PSI points. The spread is the IQR (the HR's unit) or the SD
-    (`narrow_psi_measure`). The flag is `psi_narrow` in the tables.
+  - **Narrow PSI range:** the PSI spread in the fit cohort is below `narrow_psi_below` (0.05), so the HR
+    describes a change of a few PSI points. The spread is the HR's unit (IQR, or SD with `psi_hr_unit = "sd"`)
+    unless `narrow_psi_measure` names one. The flag is `psi_narrow` in the tables.
   - **Non-proportional hazards:** a term's proportional-hazards p is below `ph_note_below` (0.05), so its effect
     changes over follow-up and the HR is an average over it. The KM header says the same when the high/low split
     fails the test. Crossing curves are the usual cause.
@@ -258,7 +261,7 @@ the gene's expression page; the probe's `expression_cells.csv`).
     below at full width.
   - Its model can add clinical terms to the panel's own model; the forest above keeps the panel's model.
   - A cell whose model could not be fitted shows the reason.
-- **Cox model figure.** Every term of one cell's model, with HR, 95% CI and p. PSI is shown per IQR; host expression
+- **Cox model figure.** Every term of one cell's model, with HR, 95% CI and p. PSI is shown per IQR (or SD); host expression
   and numeric covariates per SD; categories against their baseline level.
 - **Expression page.** The host gene's expression is drawn once per gene, after its splicing pages, so the splicing
   pages do not repeat it.

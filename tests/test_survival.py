@@ -247,3 +247,22 @@ def test_km_split_rules():
     assert expression_cell(g, pos, t, e, Settings(km_split=0.5))[0]["km_split"] == "median"
     row, _ = expression_cell(g, pos, t, e, Settings(km_split_expression="mean"))
     assert row["km_split"] == "mean" and np.isclose(row["cutoff"], g.mean())
+
+
+def test_hr_per_sd_setting():
+    """The tables hold the HR per IQR and per SD; psi_hr_unit picks the model term shown, and the narrow-range note
+    follows it unless narrow_psi_measure is set."""
+    x, pos, t, e = cohort(5)
+    r, terms = survival_cell(x, pos, t, e, None, S)
+    assert np.isclose(r["hr_per_sd"], np.exp(r["cox_beta"] * r["psi_sd"] / 0.10))
+    assert np.isclose(r["hr_per_iqr"], np.exp(r["cox_beta"] * r["psi_iqr"] / 0.10))
+    assert np.isclose(r["ci_low_sd"], np.exp((r["cox_beta"] - 1.959963984540054 * r["cox_se"]) * r["psi_sd"] / 0.10))
+    assert [m["kind"] for m in terms] == ["psi", "psi_iqr"]
+    sd = Settings(psi_hr_unit="sd")
+    r2, terms2 = survival_cell(x, pos, t, e, None, sd)
+    assert [m["kind"] for m in terms2] == ["psi", "psi_sd"] and terms2[1]["unit"].startswith("SD (")
+    assert terms2[1]["hr"] == r2["hr_per_sd"] and r2["hr_per_iqr"] == r["hr_per_iqr"] and r2["cox_p"] == r["cox_p"]
+    assert S.narrow_measure == "iqr" and sd.narrow_measure == "sd"
+    assert Settings(psi_hr_unit="sd", narrow_psi_measure="iqr").narrow_measure == "iqr"
+    with pytest.raises(ValueError, match="psi_hr_unit"):
+        Settings(psi_hr_unit="range")

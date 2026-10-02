@@ -1,5 +1,5 @@
-"""Twin forest: per cohort, the case-vs-reference delta (paired filled, unpaired open) beside the Cox HR per IQR of
-PSI. Without reference samples in the data only the HR side is drawn.
+"""Twin forest: per cohort, the case-vs-reference delta (paired filled, unpaired open) beside the Cox HR per IQR (or
+per SD) of PSI. Without reference samples in the data only the HR side is drawn.
 
 Rows are cohorts in which a plotted event had a tested comparison or a Cox fit (tested or failed), plus the cohorts
 shown at left. With two events each cohort has two sub-rows (first event ink, second grey).

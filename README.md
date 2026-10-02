@@ -301,6 +301,7 @@ annotation, and checks against SpliceImpactR.
 | KM split | median | `--km-split mean` or `--km-split 0.5`; `--km-split-expression` for expression |
 | HIT-index events | left out of `analyse` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
 | q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
+| PSI hazard ratio | per IQR of the cohort's PSI | `--hr-unit sd` (per SD) |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
@@ -320,7 +321,7 @@ annotation, and checks against SpliceImpactR.
   join the most common level. The page lists each merge. Change the limit with `level_min_patients` (0 = never).
 - **Notes.** These warn without changing any result:
   - fewer than 10 events per model term (an overfit risk);
-  - a PSI IQR below 0.05 in the fit cohort, so the HR per IQR covers a few PSI points;
+  - a PSI IQR (or SD, with `--hr-unit sd`) below 0.05 in the fit cohort, so the HR covers a few PSI points;
   - non-proportional hazards: a term's Schoenfeld test, or the KM split's, has p < 0.05, so the effect changes over
     follow-up. Pages mark such tests with † after the p (KM, model rows) or the CI (forest).
 
@@ -346,6 +347,8 @@ splice-assay analyse data/ --out results/ --covariate age --covariate stage --st
 - **What the forest shows.** The HR per IQR of PSI from this model, with the model written under the axis. The HR per
   IQR is the hazard ratio between a patient at the 75th and one at the 25th percentile of PSI in that cohort, with the
   other variables held fixed.
+- **Per SD instead.** `--hr-unit sd` (setting `psi_hr_unit`) shows the HR per SD of PSI in the cohort on the pages,
+  in the probe and its overview. The tables hold both (`hr_per_iqr`, `hr_per_sd`, with their CIs).
 - **Terms table.** `cox_terms.csv` holds every term of every fitted model.
 - **The model band.** `panel --detail` adds the full model of each cohort shown to the figure, below the KM panels.
   Each term gets an HR, a 95% CI and p, and the forests of the band share one axis.

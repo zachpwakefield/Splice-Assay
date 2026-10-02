@@ -7,7 +7,8 @@ stage, found in the clinical table; see clinical.py). Then:
     cells.csv       one row per event x cohort: group tests, KM, base and adjusted Cox, q values (BH within each
                     gene, per kind of test)
     events.csv      one row per event, ranked (see RANKING)
-    overview.png    events x cohorts: adjusted HR per IQR (colour), adjusted p < 0.05 (dot), group hit (frame)
+    overview.png    events x cohorts: adjusted HR per IQR or SD (colour), adjusted p < 0.05 (dot), q < 0.05 (*),
+                    group hit (frame)
     pages/          one assay page per ranked event (the event, its most promising cohorts, their models, the
                     forest); with an expression table, also the host gene's expression page (<GENE>_expression)
     probe.pdf       the overview, every event page in rank order, then the expression page
@@ -42,8 +43,8 @@ RANKING = ("measurable events first; then cohorts where the adjusted Cox p < 0.0
            "then cohorts with both a group hit and a survival hit, then cohorts where the KM p < 0.05, then the "
            "smallest p (adjusted Cox, else base Cox, else KM)")
 ADJ_COLS = ["cox_status", "cox_model", "cox_n", "cox_events", "cox_n_dropped", "cox_notes", "hr_per_iqr",
-            "ci_low_iqr", "ci_high_iqr", "cox_p", "cox_q", "cox_q_tests", "cox_events_per_term", "psi_narrow",
-            "ph_p"]
+            "ci_low_iqr", "ci_high_iqr", "hr_per_sd", "ci_low_sd", "ci_high_sd", "cox_p", "cox_q", "cox_q_tests",
+            "cox_events_per_term", "psi_narrow", "ph_p"]
 
 
 @dataclass
@@ -97,7 +98,9 @@ def combine(base: Results, adj: Results | None, endpoint: str) -> pd.DataFrame:
     return cells                                         # q values come from the results: BH within each gene
 
 
-def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float) -> pd.DataFrame:
+def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "iqr") -> pd.DataFrame:
+    """One row per event, ranked (RANKING). `unit`: the HR reported, per "iqr" or per "sd" (Settings.psi_hr_unit)."""
+    hr = f"hr_per_{unit}"
     rows = []
     for eid, d in cells.groupby("event_id", sort=False):
         t = d[d.cox_status.eq("tested")]
@@ -108,27 +111,27 @@ def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float) -> pd.DataFrame:
         surv_hit = d.survival_hit.fillna(False).astype(bool)
         tk = d[d.km_status.eq("tested")]
         if len(ta):
-            best, pcol, hcol, model = ta.sort_values("adj_cox_p"), "adj_cox_p", "adj_hr_per_iqr", "adjusted"
+            best, pcol, hcol, model = ta.sort_values("adj_cox_p"), "adj_cox_p", f"adj_{hr}", "adjusted"
         elif len(t):
-            best, pcol, hcol, model = t.sort_values("cox_p"), "cox_p", "hr_per_iqr", "base"
+            best, pcol, hcol, model = t.sort_values("cox_p"), "cox_p", hr, "base"
         else:                                           # no Cox model anywhere (e.g. too few deaths): the KM test
             best, pcol, hcol, model = tk.sort_values("km_p"), "km_p", None, "KM"
         b = best.iloc[0] if len(best) else None
         rows.append(dict(
             event_id=eid, gene=ds.events.at[eid, "gene"], label=ds.events.at[eid, "label"],
             event_type=ds.events.at[eid, "event_type"], cohorts_cox_tested=len(t),
-            cox_p05=len(sig), cox_p05_hr_up=int((sig.hr_per_iqr > 1).sum()), cox_p05_hr_down=int((sig.hr_per_iqr < 1).sum()),
+            cox_p05=len(sig), cox_p05_hr_up=int((sig[hr] > 1).sum()), cox_p05_hr_down=int((sig[hr] < 1).sum()),
             expected_by_chance=round(alpha * len(t), 2), adj_cohorts_tested=len(ta), adj_cox_p05=len(sig_a),
             group_hits=int(d.group_hit.fillna(False).astype(bool).sum()),
             within_patient=int(d.within_patient_support.fillna(False).astype(bool).sum()),
             group_and_survival=int((d.group_hit.fillna(False).astype(bool) & surv_hit).sum()),
-            share_hr_up=round(float((t.hr_per_iqr > 1).mean()), 2) if len(t) else np.nan,
+            share_hr_up=round(float((t[hr] > 1).mean()), 2) if len(t) else np.nan,
             km_tested=len(tk), km_p05=int((tk.km_p < alpha).sum()),
             best_cohort=None if b is None else b.cohort,
-            best_hr_per_iqr=np.nan if b is None or hcol is None else b[hcol],
+            **{f"best_{hr}": np.nan if b is None or hcol is None else b[hcol]},
             best_logrank_hr=np.nan if b is None or model != "KM" else b.logrank_hr,
             best_p=np.nan if b is None else b[pcol], best_model=model if b is not None else "",
-            best_psi_iqr=np.nan if b is None or model == "KM" else b.psi_iqr,
+            **{f"best_psi_{unit}": np.nan if b is None or model == "KM" else b[f"psi_{unit}"]},
             min_cox_q=float(t.cox_q.min()) if len(t) else np.nan))
     ev = pd.DataFrame(rows)
     if ev.empty:
@@ -167,7 +170,7 @@ def parse_top(v) -> int:
 
 
 def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settings, max_rows: int = 60):
-    """Events (rows, rank order) x cohorts: HR per IQR (adjusted when fitted, else base) in colour, p < alpha as a
+    """Events (rows, rank order) x cohorts: HR per IQR or SD (adjusted when fitted, else base) in colour, p < alpha as a
     dot, a group hit as a frame; grey = not tested."""
     import matplotlib
     from matplotlib.colors import LinearSegmentedColormap, Normalize
@@ -197,7 +200,8 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
                     continue
                 x = idx.loc[(r.event_id, c)]
                 adj = "adj_cox_status" in x and x.adj_cox_status == "tested"
-                hr, p = (x.adj_hr_per_iqr, x.adj_cox_p) if adj else (x.get("hr_per_iqr"), x.get("cox_p"))
+                u = s.psi_hr_unit
+                hr, p = (x[f"adj_hr_per_{u}"], x.adj_cox_p) if adj else (x.get(f"hr_per_{u}"), x.get("cox_p"))
                 q = x.get("adj_cox_q", np.nan) if adj else x.get("cox_q", np.nan)
                 tested = adj or x.cox_status == "tested"
                 face = cmap(norm(np.log2(hr))) if tested and np.isfinite(hr) else "#e8e7e1"
@@ -217,7 +221,8 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
             sp.set_visible(False)
         ax.xaxis.tick_top()
         fig.text(0.12 / W, 1 - 0.1 / H, f"Probe overview · {endpoint}", fontsize=8.5, fontweight="bold", va="top")
-        fig.text(0.12 / W, 1 - 0.3 / H, f"colour: HR per IQR of {_value_name(ev.event_type)} (adjusted model "
+        fig.text(0.12 / W, 1 - 0.3 / H, f"colour: HR per {s.psi_hr_unit.upper()} of {_value_name(ev.event_type)} "
+                 "(adjusted model "
                  f"where fitted); dot: p < {s.alpha:g} (large: < 0.01)"
                  + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
                  + "; frame: group hit; grey: not tested", fontsize=5.8, color=S.INK2, va="top")
@@ -226,7 +231,7 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
         cax.imshow(grad, aspect="auto", cmap=cmap, norm=norm, extent=(-1.5, 1.5, 0, 1))
         cax.set_yticks([])
         cax.set_xticks([-1, 0, 1], ["0.5", "1", "2"], fontsize=5.6)
-        cax.set_xlabel("HR per IQR", fontsize=5.8, labelpad=1)
+        cax.set_xlabel(f"HR per {s.psi_hr_unit.upper()}", fontsize=5.8, labelpad=1)
     return fig
 
 
@@ -278,7 +283,7 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
     base = analyse(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=base_model)
     adj = analyse(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=adj_model) if adj_model else None
     cells = combine(base, adj, ep)
-    ranked = rank_events(cells, ds, s.alpha)
+    ranked = rank_events(cells, ds, s.alpha, s.psi_hr_unit)
     ptab, pchanges = None, {}
     if proteins is not None and len(ranked):
         from .protein import SHOWN, ProteinCache, protein_changes
@@ -416,7 +421,7 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
     if len(t) and s.narrow_psi_below > 0:
         nar = t[t.psi_narrow.fillna(False).astype(bool)]
         sig = nar[nar.cox_p < s.alpha]
-        out.append(f"- **Narrow {v} range** ({s.narrow_psi_measure.upper()} of {v} below {s.narrow_psi_below:g} in "
+        out.append(f"- **Narrow {v} range** ({s.narrow_measure.upper()} of {v} below {s.narrow_psi_below:g} in "
                    f"the fit cohort, so the HR covers a few {v} points): {len(nar)} of {len(t)} base-model fits"
                    + (f"; with p < {s.alpha:g}: {', '.join(name(r) for r in sig.itertuples())}" if len(sig) else "")
                    + ".")
@@ -440,7 +445,8 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
         return out
     return ["## Notes on the survival tests", "", *out,
             "- All are notes on the pages and in `cells.csv`; every test ran and no result is removed. Settings: "
-            "`narrow_psi_below`, `narrow_psi_measure`, `cox_events_per_term`, `ph_note_below`.", ""]
+            "`narrow_psi_below`, `narrow_psi_measure` (default: the HR's unit, `psi_hr_unit`), `cox_events_per_term`, "
+            "`ph_note_below`.", ""]
 
 
 def _fmt(v, nd=2):
@@ -464,6 +470,7 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
     meas = ranked[ranked.measurable] if len(ranked) else ranked
     v = _value_name(ranked.event_type) if len(ranked) else "PSI"
     has_hit = bool(len(ranked)) and bool(ranked.event_type.map(opt_in).any())
+    U = s.psi_hr_unit.upper()
     L = [f"# splice-assay probe · {', '.join(sorted(set(ranked.gene)))[:120]} · {ep}", "",
          f"splice-assay {__version__}. **Everything here is nominal: a probe ranks candidates for a closer look; it "
          "does not test a hypothesis.**", "",
@@ -524,12 +531,13 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
          f"## Ranked events (ranking: {RANKING})",
          "",
          "| Rank | Event | Type | Adj. p<.05 | Base p<.05 (↑/↓) | KM p<.05 | Expected | Group hits | Group + survival | "
-         "Best cohort | HR per IQR | p |" + (" Protein (suggested) |" if ptab is not None else "") + " Page |",
+         f"Best cohort | HR per {U} | p |" + (" Protein (suggested) |" if ptab is not None else "") + " Page |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if ptab is not None else "") + "---|"]
     flat = False
     for r in meas.head(max(40, max_pages)).itertuples():
         page = f"[page]({r.page})" if r.page else ""
-        if np.isfinite(r.best_psi_iqr) and r.best_psi_iqr == 0:
+        spread = getattr(r, f"best_psi_{s.psi_hr_unit}")
+        if np.isfinite(spread) and spread == 0:
             flat = True
             page += " †"
         prot = ""
@@ -539,10 +547,11 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
         p_txt = (fp(r.best_p) + (" (KM)" if r.best_model == "KM" else "")) if np.isfinite(r.best_p) else "–"
         L.append(f"| {r.rank} | {r.label} ({r.gene}) | {r.event_type} | {r.adj_cox_p05} | {r.cox_p05} "
                  f"({r.cox_p05_hr_up}/{r.cox_p05_hr_down}) | {r.km_p05} | {r.expected_by_chance:.1f} | {r.group_hits} | "
-                 f"{r.group_and_survival} | {r.best_cohort or '–'} | {_fmt(r.best_hr_per_iqr)} | {p_txt} |{prot} {page} |")
+                 f"{r.group_and_survival} | {r.best_cohort or '–'} | {_fmt(getattr(r, f'best_hr_per_{s.psi_hr_unit}'))} "
+                 f"| {p_txt} |{prot} {page} |")
     if flat:
-        L += ["", f"† {v} barely varies in the best cohort (IQR 0): the association rests on a few samples, and "
-                  "there is no HR per IQR."]
+        L += ["", f"† {v} barely varies in the best cohort ({U} 0): the association rests on a few samples, and "
+                  f"there is no HR per {U}."]
     unmeas = ranked[~ranked.measurable] if len(ranked) else ranked
     if len(unmeas):
         L += ["", f"Not measurable in any cohort (coverage or gates): {len(unmeas)} event(s), listed in events.csv."]

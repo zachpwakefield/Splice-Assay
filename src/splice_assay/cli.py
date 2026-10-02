@@ -23,6 +23,8 @@ def _settings(args) -> Settings:
             s = s.replace(km_split=args.km_split)
         if getattr(args, "km_split_expression", None):
             s = s.replace(km_split_expression=args.km_split_expression)
+        if getattr(args, "hr_unit", None):
+            s = s.replace(psi_hr_unit=args.hr_unit)
     except ValueError as e:
         raise InputError(str(e)) from None
     if getattr(args, "case_label", None) or getattr(args, "reference_label", None):
@@ -241,7 +243,8 @@ def cmd_probe(args) -> int:
                       f"p {r.best_p:.3g}")
             else:
                 print(f"  {r.rank}. {r.label} ({r.gene}): adjusted p<.05 in {r.adj_cox_p05}, base p<.05 in "
-                      f"{r.cox_p05} of {r.cohorts_cox_tested} cohorts; best {r.best_cohort} HR {r.best_hr_per_iqr:.2f}")
+                      f"{r.cox_p05} of {r.cohorts_cox_tested} cohorts; best {r.best_cohort} HR "
+                      f"{getattr(r, f'best_hr_per_{s.psi_hr_unit}'):.2f}")
     return 0
 
 
@@ -503,6 +506,9 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--settings", help="JSON file of setting overrides")
         sp.add_argument("--km-split", metavar="median|mean|VALUE",
                         help="KM split of the event values, PSI or HIT index (default median; Settings km_split)")
+        sp.add_argument("--hr-unit", choices=["iqr", "sd"],
+                        help="show the PSI (or HIT index) hazard ratio per IQR (default) or per SD of the cohort "
+                             "(Settings psi_hr_unit; the tables hold both)")
         sp.add_argument("--km-split-expression", metavar="median|mean|VALUE",
                         help="KM split of host-gene expression (default median; Settings km_split_expression)")
         sp.add_argument("--keep", metavar="FILE",
