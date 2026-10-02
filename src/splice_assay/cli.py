@@ -366,7 +366,7 @@ def cmd_example(args) -> int:
     from .analysis import analyse
     from .plot import cox_model_figure, event_panel, expression_panel
     out = Path(args.out)
-    paths = example.write(out)
+    paths = example.write(out, separate=args.separate)
     ds = Dataset.from_dir(out / "data")
     res = analyse(ds)
     res.write(out / "results")
@@ -396,7 +396,7 @@ def cmd_import_rmats(args) -> int:
     types = [t.strip().upper() for t in args.types.split(",")] if args.types else ["SE", "RI", "A3SS", "A5SS", "MXE"]
     events, psi = import_rmats(args.rmats_dir, args.b1, args.b2, counting=args.counting, event_types=types,
                                prefix=args.prefix, names1=names1, names2=names2, mxe_psi_exon=args.mxe_psi_exon)
-    _write_event_tables(Path(args.out), events, psi, args.one_table, args.append)
+    _write_event_tables(Path(args.out), events, psi, not args.separate, args.append)
     return 0
 
 
@@ -408,7 +408,7 @@ def cmd_import_hitindex(args) -> int:
     events, psi = import_hitindex(args.matrices, gtf, genes=args.gene, prefix=args.prefix)
     n = events.event_type.value_counts().to_dict()
     print("imported: " + ", ".join(f"{n[k]} {k}" for k in ("AFE", "ALE", "HIT") if k in n))
-    _write_event_tables(Path(args.out), events, psi, args.one_table, args.append)
+    _write_event_tables(Path(args.out), events, psi, not args.separate, args.append)
     return 0
 
 
@@ -532,6 +532,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with models: side = band below; stacked = one row per cohort with its model, forest "
                              "below (auto: stacked from three cohorts)")
 
+    def layout_args(sp):
+        sp.add_argument("--separate", action="store_true",
+                        help="write events.csv and a long psi.csv instead of the default: one psi.csv holding the "
+                             "event columns and one value column per sample")
+        sp.add_argument("--one-table", action="store_true", help=argparse.SUPPRESS)   # the default now; kept for old
+        # commands
+
     def hit_arg(sp):
         sp.add_argument("--include-hit", action="store_true",
                         help="also analyse HIT-index events (left out by default: the HIT index covers every exon, a "
@@ -643,9 +650,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser("example", help="write a synthetic dataset and example outputs")
     sp.add_argument("out")
+    sp.add_argument("--separate", action="store_true",
+                    help="write the data as separate tables (samples, psi, events, survival, clinical, expression) "
+                         "instead of the default two (samples, psi) plus expression")
     sp.set_defaults(func=cmd_example)
 
-    sp = sub.add_parser("import-rmats", help="events.csv and psi.csv from an rMATS output folder")
+    sp = sub.add_parser("import-rmats", help="psi.csv (with the event columns) from an rMATS output folder")
     sp.add_argument("rmats_dir")
     sp.add_argument("--b1", required=True, help="rMATS b1.txt (BAM paths of group 1)")
     sp.add_argument("--b2", help="rMATS b2.txt")
@@ -656,19 +666,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--prefix", default="", help="prefix for event IDs")
     sp.add_argument("--mxe-psi-exon", default="transcript_upstream", choices=["transcript_upstream", "first_listed"])
     sp.add_argument("--append", action="store_true", help="add to the events and psi tables already in --out")
-    sp.add_argument("--one-table", action="store_true",
-                    help="write one psi.csv holding the event columns and one PSI column per sample (no events.csv)")
+    layout_args(sp)
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_import_rmats)
 
-    sp = sub.add_parser("import-hitindex", help="events and values from HITindex matrices (AFE, ALE, HIT index)")
+    sp = sub.add_parser("import-hitindex", help="psi.csv (with the event columns) from HITindex matrices (AFE, ALE, "
+                                                "HIT index)")
     sp.add_argument("matrices", nargs="+", help="afe/ale/hit matrices: rows '<gene_id>;<chrom>:<start>-<end>;<kind>' "
                                                "(1-based), one column per sample (CSV or TSV, .gz allowed)")
     sp.add_argument("--gtf", help="GTF giving each gene's strand and symbol (default: $SPLICE_ASSAY_GTF)")
     sp.add_argument("--gene", action="append", help="import only this gene (symbol or Ensembl ID; repeat for more)")
     sp.add_argument("--prefix", default="", help="prefix for event IDs")
-    sp.add_argument("--one-table", action="store_true",
-                    help="write one psi.csv holding the event columns and one value column per sample")
+    layout_args(sp)
     sp.add_argument("--append", action="store_true",
                     help="add to the events and psi tables already in --out (e.g. beside imported rMATS events)")
     sp.add_argument("--out", required=True)

@@ -218,3 +218,32 @@ def test_proportional_hazards_daggers(ds, tmp_path):
     for page in (sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST.replace(ph_note_below=0), detail=m),
                  sa.expression_panel(ds, "SYN1", ["COH1"], "OS", settings=FAST.replace(ph_note_below=0), model=m)):
         assert not any("†" in t or "non-proportional" in t for t in _texts(page))
+
+
+def test_q_marks(ds, tmp_path):
+    """* follows a q below q_mark_below wherever q is shown (group view, KM header, forest CI, model header and the
+    tested term's p), apart from the p-based fill; the legend says so; q_mark_below = 0 turns it off."""
+    from splice_assay.plot.style import Q_MARK
+    from splice_assay.probe import overview, probe
+    m = sa.CoxModel().with_clinical(("age",))
+    s = FAST.replace(fdr_min_family=2)                         # the synthetic families are under 10
+    p = sa.event_panel(ds, "SYN3:HIT:0002", ["COH1"], "OS", settings=s, detail=m)
+    texts = _texts(p)
+    assert Q_MARK == "*" and "q < 0.05 (Benjamini–Hochberg)" in texts
+    km = next(t for t in texts if t.startswith("split at ")).splitlines()
+    assert any(x.startswith("q ") and x.endswith(" *") for x in km)
+    assert any(t.startswith("*") for a in p.figure.axes for t in [x.get_text() for x in a.texts])   # the forest
+    assert any(" · HIT index q " in t and t.endswith(" *") for t in texts)                         # model header
+    assert p.table[p.table.panel.eq("forest")].q_marked.all()
+    band = p.table[p.table.panel.eq("cox_detail") & p.table.q.notna()]
+    assert len(band) == 1 and band.q_marked.all() and any(t.endswith(" * †") or t.endswith(" *") for t in texts)
+    g = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s)          # a group view's q
+    assert any("\nq " in t and t.splitlines()[-1].endswith(" *") for t in _texts(g))
+    off = sa.event_panel(ds, "SYN3:HIT:0002", ["COH1"], "OS", settings=s.replace(q_mark_below=0), detail=m)
+    assert not any(t == "*" or t.endswith(" *") or " * " in t or t.startswith("* ") for t in _texts(off))
+    assert sa.Settings(q_mark_below=0.1).changed() == {}                     # a drawing setting
+    res = probe(ds, genes=["SYN3"], settings=s, adjusted=None, out_dir=tmp_path, max_pages=1, include_hit=True,
+                log=lambda *_: None)
+    fig = overview(res.cells, res.events, "OS", s)
+    assert any(t.get_text() == "*" for a in fig.axes for t in a.texts)
+    assert "*: q < 0.05" in " ".join(t.get_text() for t in fig.texts)

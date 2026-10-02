@@ -330,6 +330,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     band_text = highlight_legend or ((f"{highlight_title} cell (letter: {highlight_title.lower()})" if highlight_title
                                       else "Highlighted cell") if marks else "Cohort shown at left")
     second += [("hs", f"{cox_name} p < {s.alpha:g}"), ("hn", f"{cox_name} p ≥ {s.alpha:g}"), ("band", band_text)]
+    if _q_marked(focus, fcoh, tn, sv, band, s):
+        second.append(("q", f"q < {s.q_mark_below:g} (Benjamini–Hochberg)"))
     if _ph_marked(focus, fcoh, sv, band, s):
         second.append(("ph", f"non-proportional hazards (p < {s.ph_note_below:g})"))
     lines = _legend_lines(W, first, second)
@@ -339,7 +341,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     legend_h += 0.05 + 0.115 * len(q_lines)
     if band is not None:                                    # one column layout for every model forest (aligned)
         band["cols"] = terms_columns(L["model"][1] if stacked else band["width"],
-                                     [c["disp"] for c in band["cells"] if c["disp"]] or [[]], 5.8 if stacked else 5.9)
+                                     [c["disp"] for c in band["cells"] if c["disp"]] or [[]], 5.8 if stacked else 5.9,
+                                     s.ph_note_below, s.q_mark_below)
     changes = _protein_changes(proteins, ds, events, geoms)
     pbands = [b for b in (PR.prepare(changes.get(e), W, col_ev, lab if n_ev == 2 else "")
                           for e, lab in zip(events, labels)) if b is not None]
@@ -416,7 +419,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         F.set_axes(axL, axR, lim, xlo, xhi, s_ev.min_abs_delta, glab, model_note, quantity=qty,
                    hr_label=f"HR per IQR\nof {qty} (95% CI)")
         F.draw(fig, axL, axR, fx(L["lab_x"]), fx(L["mark_x"]), fcoh, recs_by, n_ev, s.alpha, cox_name, mark_colors,
-               ph_below=s.ph_note_below)
+               ph_below=s.ph_note_below, q_below=s.q_mark_below)
         rows.append(dict(panel="forest_axis", hr_axis_low=xlo, hr_axis_high=xhi, n_ci_clipped=n_clip,
                          cox_model=model_note))
         for c in fcoh:
@@ -428,7 +431,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                  unpaired_p=r["unpaired_p"], cox_status=r["cox_status"], cox_n=r["cox_n"],
                                  cox_events=r["cox_events"], psi_iqr=r["psi_iqr"], cox_beta=r["cox_beta"],
                                  cox_se=r["cox_se"], hr_per_iqr=r["hr"], ci_low_iqr=r["lo"], ci_high_iqr=r["hi"],
-                                 cox_p=r["cox_p"], cox_q=r["cox_q"]))
+                                 cox_p=r["cox_p"], cox_q=r["cox_q"],
+                                 q_marked=bool(s.q_mark_below > 0 and r["cox_q"] < s.q_mark_below)))
         head_y = fy(f_top + 0.25 - 0.04)
         if marks and highlight_title:
             fig.text(fx(L["mark_x"]), head_y, highlight_title, fontsize=5.6, color=S.INK2, ha="center", va="bottom")
@@ -472,6 +476,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                     fig.add_artist(Line2D([fx(x), fx(x + 0.16)], [yy, yy], color=S.INK, lw=0.6, ls=(0, (2, 1.5))))
                 elif kind == "ph":
                     fig.text(fx(x + 0.08), yy, F.PH_MARK, fontsize=7, color=S.INK, ha="center", va="center")
+                elif kind == "q":
+                    fig.text(fx(x + 0.08), yy, S.Q_MARK, fontsize=7.5, color=S.INK, ha="center", va="center")
                 elif kind == "band":
                     fig.add_artist(Rectangle((fx(x), yy - 0.05 / H), fx(0.16), 0.10 / H, facecolor=S.PAPER, lw=0))
                     if any(marks.values()):                     # the first label present, in sorted order
@@ -516,8 +522,9 @@ def _model_band(ds, focus, endpoint, s, model, W, results=None) -> dict:
     for e, c in focus:
         try:
             row, terms = model_terms(ds, e, c, endpoint, model, s, results)
-            cells.append(dict(event=e, cohort=c, row=row, terms=terms, disp=display_rows(terms), error="",
-                              q=float(_get(row, "cox_q")), qty=EV.quantity(ds.events.at[e, "event_type"])))
+            q = float(_get(row, "cox_q"))
+            cells.append(dict(event=e, cohort=c, row=row, terms=terms, disp=display_rows(terms, q), error="", q=q,
+                              qty=EV.quantity(ds.events.at[e, "event_type"])))
         except InputError as err:
             cells.append(dict(event=e, cohort=c, row=None, terms=None, disp=[], error=str(err)))
     ncol = 1 if len(cells) == 1 else 2
@@ -564,10 +571,25 @@ def _q_note(gene, endpoint, tn, sv, detail_results, s, fam: str = "events") -> s
     return note + (f" Settings changed from the defaults: {s.changed_text()}." if s.changed() else "")
 
 
-def _q(cell) -> str:
-    """' · PSI q 0.031' (or 'HIT index q') for a model whose tested term has a q value, else ''."""
+def _q(cell, s) -> str:
+    """' · PSI q 0.031 *' (or 'HIT index q'; * below q_mark_below) for a model whose tested term has a q, else ''."""
     q = cell.get("q", NAN)
-    return f" · {cell.get('qty', 'PSI')} q {S.fp(q)}" if np.isfinite(q) else ""
+    return f" · {cell.get('qty', 'PSI')} {S.q_text(q, s.q_mark_below)}" if np.isfinite(q) else ""
+
+
+def _q_marked(focus, fcoh, tn, sv, band, s) -> bool:
+    """Whether the page marks a q with *: a group view's q, a KM header's q, the forest (base model) or a model
+    header."""
+    if not s.q_mark_below > 0:
+        return False
+    low = (lambda v: v is not None and np.isfinite(float(v)) and float(v) < s.q_mark_below)
+    if any(low(_get(tn.loc[f], c)) for f in focus if f in tn.index for c in ("paired_q", "unpaired_q")):
+        return True
+    if any(low(_get(sv.loc[f], "km_q")) for f in focus if f in sv.index):
+        return True
+    if any(low(_get(r, "cox_q")) for (e, c), r in sv.iterrows() if c in set(fcoh) and _get(r, "cox_status") == "tested"):
+        return True
+    return bool(band) and any(low(cell.get("q")) for cell in band["cells"])
 
 
 def _ph_marked(focus, fcoh, sv, band, s) -> bool:
@@ -626,12 +648,12 @@ def _draw_cell_model(fig, W, H, top, box, band, cell, s) -> list[dict]:
                  va="top")
         return [dict(panel="cox_detail_not_fitted", tag=tag, message=cell["error"])]
     r = cell["row"]
-    fig.text(fx(x0), fy(top), f"Cox model · {int(r.cox_n)} patients, {int(r.cox_events)} events" + _q(cell),
+    fig.text(fx(x0), fy(top), f"Cox model · {int(r.cox_n)} patients, {int(r.cox_events)} events" + _q(cell, s),
              fontsize=6.6, fontweight="bold", ha="left", va="top")
     for k, line in enumerate(_model_lines(_cell_model_text(r, band), width, 5.6)):
         fig.text(fx(x0), fy(top + 0.15 + k * MODEL_LINE), line, fontsize=5.6, color=S.INK2, ha="left", va="top")
     drawn = draw_terms(fig, W, H, top + 0.50 + band.get("stack_extra", 0.0), x0, width, cell["disp"], s.alpha,
-                       BAND_PITCH, fs=5.8, tag=tag, ph_below=s.ph_note_below,
+                       BAND_PITCH, fs=5.8, tag=tag, ph_below=s.ph_note_below, q_below=s.q_mark_below,
                        xlim=band["xlim"], cols=band["cols"])
     return [dict(panel="cox_detail", cox_model=_cell_model_text(r, band), cox_n=int(r.cox_n),
                  cox_events=int(r.cox_events), **d) for d in drawn]
@@ -650,7 +672,7 @@ def _draw_band(fig, W, H, y0, band, s, n_ev) -> list[dict]:
         x0 = 0.12 + col * (band["width"] + 0.35)
         top = y0 + line * band["line_h"]
         head = cell["cohort"] if n_ev == 1 else f"{cell['event']} · {cell['cohort']}"
-        fig.text(fx(x0), fy(top + 0.02), f"{head} · Cox model" + _q(cell), fontsize=7.0, fontweight="bold",
+        fig.text(fx(x0), fy(top + 0.02), f"{head} · Cox model" + _q(cell, s), fontsize=7.0, fontweight="bold",
                  ha="left", va="top")
         tag = f"{cell['event']}|{cell['cohort']}"
         if cell["row"] is None:
@@ -663,7 +685,7 @@ def _draw_band(fig, W, H, y0, band, s, n_ev) -> list[dict]:
         for k, line in enumerate(_model_lines(text, band["width"], 5.8)):
             fig.text(fx(x0), fy(top + 0.19 + k * MODEL_LINE), line, fontsize=5.8, color=S.INK2, ha="left", va="top")
         drawn = draw_terms(fig, W, H, top + BAND_HEAD + band["head_extra"], x0, band["width"], cell["disp"], s.alpha,
-                           BAND_PITCH, fs=5.9, ph_below=s.ph_note_below,
+                           BAND_PITCH, fs=5.9, ph_below=s.ph_note_below, q_below=s.q_mark_below,
                            tag=tag, xlim=band["xlim"], cols=band["cols"])
         rows += [dict(panel="cox_detail", cox_model=_cell_model_text(r, band), cox_n=int(r.cox_n),
                       cox_events=int(r.cox_events), **d) for d in drawn]
@@ -949,14 +971,15 @@ def _group_view(fig, ax, ds, e, c, v, t_, v_, s, glab, rows, printed, tag, quant
         _check(len(x) == int(t_["unpaired_n_case"]) and len(y) == int(t_["unpaired_n_reference"]), "group sizes", e, c)
     qp, qu = float(_get(t_, "paired_q")), float(_get(t_, "unpaired_q"))
     all_stats = (f"Δ {S.fd(t_['unpaired_delta_median'])}\np {S.fp(t_['unpaired_p'])}" if st_u == "tested"
-                 else "not tested\n") + (f"\nq {S.fp(qu)}" if st_u == "tested" and np.isfinite(qu) else "")
+                 else "not tested\n") + ("\n" + S.q_text(qu, s.q_mark_below) if st_u == "tested" and np.isfinite(qu)
+                                          else "")
     if st_p == "tested":
         _check(n_pairs == int(t_["paired_n_pairs"]), "pair count", e, c)
         _check(abs(np.median(pr_c[ok] - pr_r[ok]) - t_["paired_delta_median"]) < 1e-12, "paired delta", e, c)
         (mn, mt), meds = T.paired_and_all(
             fig, ax, pr_r[ok], pr_c[ok], y, x, cut, glab,
             f"{n_pairs} pairs\nΔ {S.fd(t_['paired_delta_median'])}\np {S.fp(t_['paired_p'])}"
-            + (f"\nq {S.fp(qp)}" if np.isfinite(qp) else ""),
+            + ("\n" + S.q_text(qp, s.q_mark_below) if np.isfinite(qp) else ""),
             f"all samples\n{all_stats}", quantity=quantity, lim=lim)
         rows += [dict(panel="pairs", tag=tag, patient_id=pid, psi_reference=a, psi_case=b)
                  for pid, a, b in zip(pr.patient_id.to_numpy()[ok], pr_r[ok], pr_c[ok])]

@@ -59,11 +59,12 @@ def set_axes(axL, axR, lim, xlo, xhi, min_abs_delta, labels, model_note="", quan
 
 
 def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox_name, colors=None,
-         ph_below: float = 0.0) -> bool:
-    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label; ph_p optional). axL may
-    be None. A dagger follows a CI whose proportional-hazards p is below ph_below; returns whether one was drawn."""
+         ph_below: float = 0.0, q_below: float = 0.0) -> dict:
+    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label; cox_q and ph_p
+    optional). axL may be None. After a CI, * when its q is below q_below (the fill shows p < alpha) and a dagger when
+    its proportional-hazards p is below ph_below; returns which of the two were drawn ({"q": bool, "ph": bool})."""
     colors = colors or {}
-    marked = False
+    marked = dict(q=False, ph=False)
     n = len(cohorts)
     offs = [0.0] if n_ev == 1 else [-0.24, 0.24]
     shades = [S.INK] if n_ev == 1 else [S.INK, S.SECOND]
@@ -107,10 +108,14 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
                         axR.plot([edge], [yy], marker=mk, ms=2.6, color=col, mew=0, zorder=3, clip_on=False)
                 axR.scatter([min(max(r["hr"], xlo), xhi)], [yy], s=15 if n_ev == 1 else 11, marker="D",
                             facecolor=col if r["cox_p"] < alpha else "white", edgecolor=col, lw=0.7, zorder=3)
-                if ph_below > 0 and r.get("ph_p", np.nan) < ph_below:
-                    axR.annotate(PH_MARK, (min(hi, xhi), yy), xytext=(3, 0), textcoords="offset points", fontsize=6.0,
-                                 color=col, ha="left", va="center", annotation_clip=False)
-                    marked = True
+                q, ph = r.get("cox_q", np.nan), r.get("ph_p", np.nan)
+                after = [m for m, on in ((S.Q_MARK, q_below > 0 and q < q_below),
+                                         (PH_MARK, ph_below > 0 and ph < ph_below)) if on]
+                if after:
+                    axR.annotate(" ".join(after), (min(hi, xhi), yy), xytext=(3, 0), textcoords="offset points",
+                                 fontsize=6.0, color=col, ha="left", va="center", annotation_clip=False)
+                    marked["q"] |= S.Q_MARK in after
+                    marked["ph"] |= PH_MARK in after
             elif r["cox_status"] == "failed":
                 axR.text(1.0, yy, f"{cox_name} fit failed", fontsize=5.2, color=S.MUTED, ha="center", va="center")
     for ax in axes:

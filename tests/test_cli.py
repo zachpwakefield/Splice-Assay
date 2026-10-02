@@ -10,6 +10,7 @@ def test_example_then_commands(tmp_path, capsys):
     assert main(["example", str(out)]) == 0
     data = out / "data"
     assert (out / "results" / "survival.csv").exists() and len(list((out / "figures").glob("*.png"))) == 6
+    assert {p.name for p in (out / "data").glob("*.csv")} == {"samples.csv", "psi.csv", "expression.csv"}   # two + 1
     assert main(["validate", str(data)]) == 0
     assert "COH1" in capsys.readouterr().out
     assert main(["analyse", str(data), "--out", str(tmp_path / "res"), "--event", "SYN1:SE:1",
@@ -71,3 +72,19 @@ def test_input_errors_exit_2(tmp_path, capsys):
     tmp_path.joinpath("events.csv").write_text("event_id,gene\ne,G\n")
     assert main(["validate", str(tmp_path)]) == 2
     assert "missing column(s) group" in capsys.readouterr().err
+
+
+def test_example_as_separate_tables(tmp_path, capsys):
+    """The default two-table example and --separate give the same data and the same statistics."""
+    import splice_assay as sa
+    from splice_assay import example
+    assert main(["validate", str(example.write(tmp_path / "two")["samples"].parent)]) == 0
+    assert "survival: from the samples table (DSS, OS)" in capsys.readouterr().out
+    sep = example.write(tmp_path / "sep", separate=True)
+    assert {p.name for p in sep["samples"].parent.glob("*.csv")} == {f"{t}.csv" for t in
+                                                                    ("samples", "psi", "events", "survival",
+                                                                     "clinical", "expression")}
+    a, b = (sa.Dataset.from_dir(tmp_path / f / "data") for f in ("two", "sep"))
+    key = ["event_id", "cohort", "endpoint"]
+    x, y = (sa.analyse(d, cohorts=["COH1"]).survival.sort_values(key).reset_index(drop=True) for d in (a, b))
+    pd.testing.assert_frame_equal(x, y)

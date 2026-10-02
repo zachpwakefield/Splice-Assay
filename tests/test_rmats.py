@@ -68,15 +68,21 @@ def test_name_count_must_match(rmats_dir):
 
 
 def test_import_as_one_table(rmats_dir, tmp_path):
+    """By default one psi.csv holds the event columns and the PSI values; --separate writes events.csv and a long
+    psi.csv."""
     from splice_assay.cli import main
     out = tmp_path / "one"
-    assert main(["import-rmats", str(rmats_dir), "--b1", str(rmats_dir / "b1.txt"), "--one-table", "--out",
-                 str(out)]) == 0
+    assert main(["import-rmats", str(rmats_dir), "--b1", str(rmats_dir / "b1.txt"), "--out", str(out)]) == 0
     assert not (out / "events.csv").exists()
     t = pd.read_csv(out / "psi.csv")
     assert {"event_id", "gene", "constant", "variable", "s1", "s2"} <= set(t.columns)
+    same = tmp_path / "same"                                 # --one-table, the old flag, is still accepted
+    assert main(["import-rmats", str(rmats_dir), "--b1", str(rmats_dir / "b1.txt"), "--one-table", "--out",
+                 str(same)]) == 0
+    assert (same / "psi.csv").read_text() == (out / "psi.csv").read_text()
     two = tmp_path / "two"
-    assert main(["import-rmats", str(rmats_dir), "--b1", str(rmats_dir / "b1.txt"), "--out", str(two)]) == 0
+    assert main(["import-rmats", str(rmats_dir), "--b1", str(rmats_dir / "b1.txt"), "--separate", "--out",
+                 str(two)]) == 0
     long = pd.read_csv(two / "psi.csv").pivot(index="event_id", columns="sample_id", values="psi")
     pd.testing.assert_frame_equal(t.set_index("event_id")[["s1", "s2"]].sort_index(),
                                   long[["s1", "s2"]].sort_index(), check_names=False)

@@ -86,10 +86,10 @@ def test_import_cli(tmp_path, capsys, monkeypatch):
     assert main(["import-hitindex", *mats, "--gtf", gtf, "--out", str(tmp_path / "fresh")]) == 0
     out = capsys.readouterr().out
     assert "imported: 2 AFE, 2 ALE, 2 HIT" in out and "next: add samples.csv" in out
-    assert {p.name for p in (tmp_path / "fresh").iterdir()} == {"events.csv", "psi.csv"}
-    assert main(["import-hitindex", *mats, "--gtf", gtf, "--gene", "SYN3", "--one-table",
-                 "--out", str(tmp_path / "one")]) == 0
-    assert {p.name for p in (tmp_path / "one").iterdir()} == {"psi.csv"}
+    assert {p.name for p in (tmp_path / "fresh").iterdir()} == {"psi.csv"}             # one table by default
+    assert main(["import-hitindex", *mats, "--gtf", gtf, "--gene", "SYN3", "--separate",
+                 "--out", str(tmp_path / "two")]) == 0
+    assert {p.name for p in (tmp_path / "two").iterdir()} == {"events.csv", "psi.csv"}
     assert main(["import-hitindex", *mats, "--out", str(tmp_path / "x")]) == 2       # no GTF, no strand
     assert "needs --gtf" in capsys.readouterr().err
     (tmp_path / "tsv").mkdir()

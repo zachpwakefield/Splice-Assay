@@ -297,14 +297,34 @@ def make(seed: int = 7) -> dict[str, pd.DataFrame]:
                 expression=pd.concat([expression, hit_expr], ignore_index=True), clinical=pd.DataFrame(clin_rows))
 
 
-def write(out_dir, seed: int = 7) -> dict[str, Path]:
-    """Write the synthetic tables (CSV) and the GTF into out_dir/data/, a protein cache into out_dir/proteins/, and
-    SYN3's AFE/ALE/HIT values as HITindex matrices into out_dir/hitindex/."""
+def condensed(tables: dict) -> dict[str, pd.DataFrame]:
+    """The tables of make() in the default two-table form, plus expression: samples with each patient's survival
+    (OS.time, OS, DSS.time, DSS) and clinical columns, and psi with the event columns and one PSI column per sample."""
+    sv = tables["survival"]
+    wide = pd.DataFrame(index=pd.Index(sv.patient_id.unique(), name="patient_id"))
+    for ep in dict.fromkeys(sv.endpoint):
+        e = sv[sv.endpoint.eq(ep)].set_index("patient_id")
+        wide[f"{ep}.time"] = e.time
+        wide[ep] = e.event.astype("Int64")
+    samples = (tables["samples"].merge(wide.reset_index(), on="patient_id", how="left")
+               .merge(tables["clinical"], on="patient_id", how="left"))
+    values = tables["psi"].pivot(index="event_id", columns="sample_id", values="psi")
+    values = values.reindex(index=tables["events"].event_id,
+                            columns=[s for s in tables["samples"].sample_id if s in values.columns])
+    psi = tables["events"].merge(values.reset_index(), on="event_id")
+    return dict(samples=samples, psi=psi, expression=tables["expression"])
+
+
+def write(out_dir, seed: int = 7, separate: bool = False) -> dict[str, Path]:
+    """Write the synthetic data and the GTF into out_dir/data/, a protein cache into out_dir/proteins/, and SYN3's
+    AFE/ALE/HIT values as HITindex matrices into out_dir/hitindex/. The data are in the default two-table form
+    (samples, psi) plus expression; `separate`: one table each (samples, psi, events, survival, clinical,
+    expression)."""
     d = Path(out_dir) / "data"
     d.mkdir(parents=True, exist_ok=True)
     paths = {}
     tables = make(seed)
-    for name, df in tables.items():
+    for name, df in (tables if separate else condensed(tables)).items():
         paths[name] = d / f"{name}.csv"
         df.to_csv(paths[name], index=False, lineterminator="\n")
     hd = Path(out_dir) / "hitindex"                        # SYN3 again, as HITindex matrices (for import-hitindex)

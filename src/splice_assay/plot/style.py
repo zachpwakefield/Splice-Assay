@@ -73,6 +73,16 @@ def fp(p) -> str:
     return f"{p:.3f}" if p < 0.1 else f"{p:.2f}"
 
 
+Q_MARK = "*"                                    # follows a q value below Settings.q_mark_below
+
+
+def q_text(q, below: float) -> str:
+    """'q 0.003 *' (the mark when q is below `below`), 'q 0.21', or '' when there is no q."""
+    if q is None or not np.isfinite(float(q)):
+        return ""
+    return f"q {fp(float(q))}" + (f" {Q_MARK}" if below > 0 and float(q) < below else "")
+
+
 def fd(v) -> str:
     """A delta PSI to print: up to 4 decimals, typographic minus."""
     t = f"{v:+.4f}".rstrip("0").rstrip(".")

@@ -198,13 +198,17 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
                 x = idx.loc[(r.event_id, c)]
                 adj = "adj_cox_status" in x and x.adj_cox_status == "tested"
                 hr, p = (x.adj_hr_per_iqr, x.adj_cox_p) if adj else (x.get("hr_per_iqr"), x.get("cox_p"))
+                q = x.get("adj_cox_q", np.nan) if adj else x.get("cox_q", np.nan)
                 tested = adj or x.cox_status == "tested"
                 face = cmap(norm(np.log2(hr))) if tested and np.isfinite(hr) else "#e8e7e1"
                 ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, facecolor=face, lw=0))
                 gh = x.get("group_hit", False)
                 if pd.notna(gh) and bool(gh):
                     ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, fill=False, edgecolor=S.INK, lw=0.7))
-                if tested and np.isfinite(p) and p < s.alpha:
+                if tested and s.q_mark_below > 0 and np.isfinite(q) and q < s.q_mark_below:   # q, not just p
+                    ax.text(j + 0.5, i + 0.62, S.Q_MARK, fontsize=9, color=S.INK, ha="center", va="center",
+                            fontweight="bold")
+                elif tested and np.isfinite(p) and p < s.alpha:
                     ax.plot([j + 0.5], [i + 0.5], "o", ms=2.6 if p >= 0.01 else 3.6, color=S.INK, mew=0)
         ax.set_xticks(np.arange(nc) + 0.5, cohorts, rotation=90, fontsize=5.6)
         ax.set_yticks(np.arange(nr) + 0.5, [f"{r.rank}. {r.label}  {r.gene}" for r in ev.itertuples()], fontsize=6.0)
@@ -214,9 +218,9 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
         ax.xaxis.tick_top()
         fig.text(0.12 / W, 1 - 0.1 / H, f"Probe overview · {endpoint}", fontsize=8.5, fontweight="bold", va="top")
         fig.text(0.12 / W, 1 - 0.3 / H, f"colour: HR per IQR of {_value_name(ev.event_type)} (adjusted model "
-                 "where fitted); dot: p < "
-                 f"{s.alpha:g} (large: < 0.01); frame: group hit; grey: not tested", fontsize=5.8, color=S.INK2,
-                 va="top")
+                 f"where fitted); dot: p < {s.alpha:g} (large: < 0.01)"
+                 + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
+                 + "; frame: group hit; grey: not tested", fontsize=5.8, color=S.INK2, va="top")
         cax = fig.add_axes([label_w / W, 0.25 / H, min(1.6, nc * cell_w) / W, 0.08 / H])
         grad = np.linspace(-1.5, 1.5, 256)[None, :]
         cax.imshow(grad, aspect="auto", cmap=cmap, norm=norm, extent=(-1.5, 1.5, 0, 1))

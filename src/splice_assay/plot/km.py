@@ -78,7 +78,7 @@ def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag:
     ax.text(0.0, 1.03, split_text(row, what) + "\n"
             f"HR {row['logrank_hr']:.2f} (high vs low) · log-rank p {S.fp(row['km_p'])}" + (f" {PH_MARK}" if ph_line
                                                                                          else "") + "\n"
-            + (f"q {S.fp(q)}\n" if np.isfinite(q) else "") +
+            + (S.q_text(q, s.q_mark_below) + "\n" if np.isfinite(q) else "") +
             f"events {int(row['events_high'])} high, {int(row['events_low'])} low"
             + (f"\n{PH_MARK} non-proportional hazards (p {S.fp(ph)})" if ph_line else ""), transform=ax.transAxes,
             fontsize=6.0, va="bottom", ha="left", color=S.INK2, linespacing=1.2)

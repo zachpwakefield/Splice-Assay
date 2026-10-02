@@ -14,7 +14,7 @@ import numpy as np
 
 TIME_UNITS = {"days": None, "months": 12.0, "years": 1.0}
 DRAWING = {"km_max_years", "km_tick_years", "gene_model_min_frac", "nested_biotypes", "exclude_transcript_types",
-           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page"}
+           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below"}
 
 
 def _split_rule(v, name: str):
@@ -83,6 +83,7 @@ class Settings:
     reference_label: str | None = None  # display name of the reference group
     cohorts_per_page: int = 6         # more cohorts on a page are split into balanced pages of at most this many,
                                       # each with the full forest (0 = one page)
+    q_mark_below: float = 0.05        # a q below this is marked * on the pages, beside the p-based fill (0 = never)
     formats: tuple = ("svg", "pdf", "png")
     dpi: int = 400
 
@@ -96,7 +97,7 @@ class Settings:
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"Settings.{name} must lie in (0, 1]")
         for name in ("min_abs_delta", "low_psi_variance_sd", "gex_min_abs_delta", "cox_events_per_term",
-                     "narrow_psi_below", "ph_note_below", "hit_min_abs_delta"):
+                     "narrow_psi_below", "ph_note_below", "hit_min_abs_delta", "q_mark_below"):
             if getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be >= 0")
         for name in ("psi_step", "ci_z", "days_per_year", "km_max_years", "km_tick_years", "nr_refit_step_size"):
