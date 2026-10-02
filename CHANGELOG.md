@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.1 (2026-10-02)
+
+- **Install guide.** The README's install section covers the PyPI release: a virtual environment, checking the
+  install, the Parquet extra (`pip install "splice-assay[parquet]"`), upgrading, and installing from a clone to run
+  the tests. No code changes.
+
 ## 0.1.0 (2026-10-02)
 
 First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript matcher it ports).
