@@ -21,22 +21,16 @@ Every p value is nominal. The tool ranks and displays evidence; it does not decl
 
 ## Step 1: get the data into shape
 
-Put the tables in one folder: `samples`, `psi`, `events`, `survival`, and optionally `pairs`, `expression` and
-`clinical` (`.csv`, `.tsv` or `.parquet`). The minimum columns:
+Put two tables in one folder (`.csv`, `.tsv` or `.parquet`), plus an optional expression table:
 
 | Table | Columns |
 |---|---|
-| samples | `sample_id`, `patient_id`, `cohort`, `group` |
-| psi | `event_id`, `sample_id`, `psi` (0–1), or wide: `event_id` + one column per sample |
-| events | `event_id`, `gene`; to draw: `chrom`, `strand`, `event_type`, `constant`, `variable` |
-| survival | `patient_id`, `endpoint`, `time`, `event`, or wide `OS.time` + `OS`, … |
+| samples | `sample_id`, `patient_id`, `cohort`, `group`; survival columns `OS.time` + `OS`, …; clinical columns (age, sex and stage are found automatically); optional `pair_id`, `role` |
+| psi | the event columns (`event_id`, `gene`; to draw: `chrom`, `strand`, `event_type`, `constant`, `variable`), then one PSI column (0–1) per sample |
 | expression | `gene`, `sample_id`, `value` (e.g. log2 TPM + 1), or wide |
-| clinical | `patient_id` + anything (age, sex, stage are found automatically) |
 
-- **Two tables are enough:**
-  - `samples` may also carry the survival columns (`OS.time`, `OS`, …), the clinical columns and an optional
-    `pair_id`;
-  - `psi` may carry the event columns beside one PSI column per sample.
+- **This is the default form.** `example`, `import-rmats` and `import-hitindex` write it.
+  - Separate `events`, `survival`, `clinical` and `pairs` tables (and a long `psi`) also work, and take precedence.
   - `validate` reports where each table came from ("survival: from the samples table").
 - **Subsets:** `--keep FILE` keeps only the patients listed (IDs, or barcodes starting with them), with all their
   samples. `--where COLUMN=VALUE[,VALUE]` keeps the patients with one of the values in a clinical or samples
@@ -48,8 +42,8 @@ Put the tables in one folder: `samples`, `psi`, `events`, `survival`, and option
   - Say which is the case either with `--case "Responder" --reference "Non-responder"` or with a `role` column in
     samples (`case` / `reference`).
   - Effects are case minus reference.
-- **rMATS output:** `splice-assay import-rmats` writes `events.csv` and `psi.csv`, or, with `--one-table`, a
-  single `psi.csv` holding both.
+- **rMATS output:** `splice-assay import-rmats` writes one `psi.csv` holding the event columns and the PSI values
+  (`--separate`: `events.csv` and a long `psi.csv`).
 - **HITindex output** (alternative first and last exons, HIT index): `splice-assay import-hitindex afe.csv ale.csv
   hit.csv --gtf GTF --out DATA --append` adds them beside the rMATS events. The GTF supplies the strand, which the
   HITindex IDs lack.
@@ -213,6 +207,8 @@ splice-assay panel DATA --event EVENT_ID [--cohort A --cohort B ...] [--gtf ...]
   1.44 (95% CI 1.11–1.87), p 0.005, Cox with host expression, age, sex and stage, LUAD, OS".
 - **What HR per IQR means.** It is the hazard ratio between a patient at the 75th and one at the 25th percentile of
   PSI in that cohort, other terms fixed. HR > 1 means higher PSI goes with worse survival.
+- **Markers.** Filled markers mean p < 0.05; a `*` means q < 0.05 within the gene's family. Say which one a claim
+  rests on.
 - **Chance.** State how many tests were run and how many p < 0.05 chance predicts. Quote q only with its family:
   e.g. "q 0.03, BH within EHMT2 over the 105 adjusted-model Cox tests for OS".
   - Each kind of test is its own family within the gene: `paired_q`, `unpaired_q`, `km_q`, `cox_q`, `adj_cox_q`.

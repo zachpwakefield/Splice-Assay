@@ -64,13 +64,14 @@ three cohorts:
   - p comes from the Mann–Whitney test.
   - The dotted line is the KM split.
 - **Hits and q.** A design is a hit when p < 0.05, |Δ| > 0.10, the Hodges–Lehmann shift agrees in sign, and the result
-  survives dropping PSI values of exactly 0 or 1. A q line appears when the gene has at least 10 such tests.
+  survives dropping PSI values of exactly 0 or 1. A q line appears when the gene has at least 10 such tests, with a
+  `*` when q < 0.05.
 
 **Middle: Kaplan–Meier.** The cohort is split at the median PSI of its survival samples (or the mean, or a value set
 with `--km-split`); PSI at or below the split is the low arm.
 - **Header.**
   - The split: "split at median PSI 0.7705", or "split at PSI 0.5 (set)" for a value you gave.
-  - The log-rank HR (high vs low) and p, then q and the events per arm.
+  - The log-rank HR (high vs low) and p, then q (with `*` when q < 0.05) and the events per arm.
 - **Curves.** 95% bands, with ticks for censored patients. The at-risk table counts patients still followed.
 - **A † after the log-rank p**, with a last line "† non-proportional hazards (p …)": the hazard ratio between the arms
   changes over follow-up, for example when the curves cross. The log-rank test still ran; it averages that change.
@@ -85,6 +86,7 @@ stage).
   - Filled markers have p < 0.05.
   - A † after a row's p: that term failed the proportional-hazards test (p < 0.05), so its HR is an average over
     follow-up.
+  - A `*` after the PSI row's p: its q (shown in the header) is below 0.05.
 
 ### 4. When a cohort cannot be fully tested, and model notes
 
@@ -115,6 +117,7 @@ stage).
   axis), so all cohorts are compared under one model.
   - Filled diamonds have p < 0.05.
   - Arrowheads mark a CI that runs off the axis.
+  - A `*` after a CI: that fit's q is below 0.05. The fill shows p, the `*` shows q.
   - A † after a CI: the PSI term of that fit failed the proportional-hazards test.
 - **Shading** marks the cohorts drawn above. Look for the same direction across cohorts.
 
@@ -122,8 +125,8 @@ stage).
 
 ![Legend and footnote](reading/06_legend_footnote.png)
 
-- **The legend** covers every symbol on the page. When the page carries a †, the legend adds "† non-proportional
-  hazards (p < 0.05)".
+- **The legend** covers every symbol on the page. When the page carries a `*` or a †, the legend adds
+  "* q < 0.05 (Benjamini–Hochberg)" or "† non-proportional hazards (p < 0.05)".
 - **The footnote** names the q families with their sizes (Benjamini–Hochberg within the gene, one family per kind of
   test) and lists any setting changed from the defaults. A page from relaxed gates always says so.
 
@@ -164,7 +167,8 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 ![Probe overview](reading/08_overview.png)
 
 - **Colour** is the HR per IQR of PSI (of the HIT index for HIT events), from the adjusted model where it was fitted.
-- **A dot** is p < 0.05 (a large dot p < 0.01). A frame marks a tumour–normal hit. Grey cells were not tested.
+- **A dot** is p < 0.05 (a large dot p < 0.01); a `*` replaces it when q < 0.05. A frame marks a tumour–normal hit.
+  Grey cells were not tested.
 - **Rows** follow the ranking.
 
 ### The tables

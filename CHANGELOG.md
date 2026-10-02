@@ -81,11 +81,14 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
 - **q values within each gene.** Benjamini–Hochberg per kind of test (within patients, all samples, KM, Cox PSI
   term; per endpoint and model) over all of the gene's events × cohorts.
   - Shown beside p on the pages, with a footnote naming the family.
+  - A `*` marks each q below `q_mark_below` (0.05): after the q, the forest's CI, the tested term's p and in the
+    probe overview. The filled markers stay on p.
   - No q for families of fewer than 10 tests (`fdr_min_family`).
   - `panel` and `panels` now analyse every event of the gene so that the family is complete.
-- **Two tables are enough.**
-  - `samples` may carry survival (wide `OS.time` + `OS`, …), clinical columns and `pair_id`.
-  - `psi` may carry the event columns.
+- **Two tables are the default input.**
+  - `samples` carries survival (wide `OS.time` + `OS`, …), clinical columns and an optional `pair_id`.
+  - `psi` carries the event columns beside one PSI column per sample.
+  - `example`, `import-rmats` and `import-hitindex` write this form; `--separate` writes separate tables.
   - Separate tables still work and take precedence.
 - **Host-gene expression page.** With an expression table, the host gene gets one page of its own, drawn once after
   its splicing pages so they do not repeat it (`expression_panel`).

@@ -148,6 +148,9 @@ Every p value for splicing gets a Benjamini–Hochberg q within its gene. Each k
   changes no PSI q value. A page's footnote says which events its families cover.
 - **Where q is shown.** The pages print q under or beside the p values: the tumour–normal titles, the KM header,
   and the Cox model headers. A footnote names the family.
+- **The q mark.** A `*` follows each q below `q_mark_below` (0.05), and the forest's CI and the tested term's p in
+  the model rows carry it too. In the probe overview it replaces the p dot. It is separate from the filled markers,
+  which stay on p.
 - **How the family is built.** `panel` and `panels` analyse all of a gene's events of the page's kind (PSI events,
   or HIT-index events), and `probe` all of the gene's events it probes, so the family is the whole gene; `analyse`
   uses the events it is given.
@@ -244,7 +247,7 @@ the gene's expression page; the probe's `expression_cells.csv`).
 - **Event panel: forest.** One row per cohort where a plotted event had a tested comparison or a Cox fit, plus the
   cohorts shown at left.
   - Left: the paired Δ (filled) and unpaired Δ (open).
-  - Right: the HR per IQR with its 95% CI, filled when Cox p < α.
+  - Right: the HR per IQR with its 95% CI, filled when Cox p < α; a `*` after the CI when its q < 0.05.
   - The model is written under the axis.
   - The HR axis snaps to 1/8…8. It shows every shaded cell's CI in full; other CIs beyond the axis end in an
     arrowhead.

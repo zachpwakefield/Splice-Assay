@@ -84,8 +84,27 @@ sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=clinical, out_dir="figu
 
 ## Input tables
 
-Put the tables in one folder, named `<table>.csv` (or `.tsv`, `.txt`, `.parquet`), or pass DataFrames. There is one
-row per record, and IDs are read as text.
+Two tables are enough, plus an optional expression table. Put them in one folder, named `<table>.csv` (or `.tsv`,
+`.txt`, `.parquet`), or pass DataFrames. IDs are read as text.
+
+| Table | Columns |
+|---|---|
+| `samples` | One row per sample: `sample_id`, `patient_id`, `cohort`, `group`; the survival columns (`OS.time` + `OS`, `DSS.time` + `DSS`, …); any clinical columns (age, sex, stage, …); optional `role` (case/reference), `survival_cohort` (true/false) and `pair_id` |
+| `psi` | One row per event: the event columns (`event_id`, `gene`; to draw it also `chrom`, `strand`, `event_type`, `constant`, `variable`; optional `label`, `gene_id`, `expression_gene`, `psi_junctions`, `other_junctions`), then one PSI column per sample |
+| `expression` (optional) | long: `gene`, `sample_id`, `value`; or wide: `gene` + one column per sample |
+
+How they are read:
+- **Survival and clinical values** come from each patient's survival sample (one tumour per patient). They may be
+  repeated on the patient's other rows or left empty there.
+- **Pairs.** Samples sharing a `pair_id` within a cohort form a pair. Without `pair_id`, a patient's one tumour and
+  one normal sample are paired.
+- **This is the default form.** `splice-assay example` writes its data this way, and `import-rmats` and
+  `import-hitindex` write one `psi.csv` holding the event columns.
+
+### Separate tables (also accepted)
+
+Each part can instead have its own table. A separate table takes precedence over the same columns in `samples` or
+`psi`, and `validate` says where each table came from. `splice-assay example DIR --separate` writes this form.
 
 | Table | Required columns | Optional columns |
 |---|---|---|
@@ -96,22 +115,6 @@ row per record, and IDs are read as text.
 | `pairs` | `cohort`, `patient_id`, `case_sample`, `reference_sample` | |
 | `expression` | long: `gene`, `sample_id`, `value`; or wide: `gene` + one column per sample | |
 | `clinical` | `patient_id` | any covariates: age, sex, stage, … |
-
-### Two tables are enough
-
-The patient-level tables can be columns of `samples`, and the event table can be columns of `psi`:
-
-| Table | Columns |
-|---|---|
-| `samples` | `sample_id`, `patient_id`, `cohort`, `group`, plus survival columns (`OS.time`, `OS`, `DSS.time`, `DSS`, …), plus any clinical columns (age, sex, stage, …), plus an optional `pair_id` |
-| `psi` | the event columns (`event_id`, `gene`, `chrom`, `strand`, `event_type`, `constant`, `variable`, …) and one PSI column per sample |
-
-How the combined tables are read:
-- **Survival and clinical values** come from each patient's survival sample (one tumour per patient). They may be
-  repeated on the patient's normal rows or left empty there.
-- **Pairs.** Samples sharing a `pair_id` within a cohort form a pair. Without `pair_id`, a patient's one tumour and
-  one normal sample are paired.
-- **Separate tables** still work and take precedence. `validate` says where each table came from.
 
 ### Subsets (e.g. one subtype)
 
@@ -204,10 +207,10 @@ The junctions of both forms follow from these coordinates. For any other event t
 splice-assay import-rmats rmats_out/ --b1 b1.txt --b2 b2.txt --counting JCEC --out my_data/
 ```
 
-This writes `events.csv` (with geometry) and `psi.csv` (from `IncLevel1`/`IncLevel2`, named after the BAM files).
-With `--one-table` it writes one `psi.csv` holding the event columns and the PSI values. Add `samples.csv` to the
-same folder; survival and clinical columns can go in it, or in their own tables. For MXE events, PSI is taken to measure the transcript-upstream
-exon; see `splice_assay.rmats` and check one known event in your data.
+This writes one `psi.csv`: the event columns (with geometry), then the PSI values from `IncLevel1`/`IncLevel2`, one
+column per sample, named after the BAM files. `--separate` writes `events.csv` and a long `psi.csv` instead. Add
+`samples.csv`, with the survival and clinical columns, to the same folder. For MXE events, PSI is taken to measure the
+transcript-upstream exon; see `splice_assay.rmats` and check one known event in your data.
 
 ### From HITindex
 
@@ -223,7 +226,8 @@ per-sample outputs looks like this; `splice-assay example` writes three in `demo
 - **`--gene`** keeps the listed genes (symbols or Ensembl IDs). The matrices are streamed, so a large file costs
   little memory.
 - **`--append`** adds the events to the tables already in the folder (for example after `import-rmats`), in the
-  layout it finds there; an event ID already present is an error.
+  layout it finds there; an event ID already present is an error. Without it, the events go into a new `psi.csv`
+  with their event columns (`--separate`: `events.csv` and a long `psi.csv`).
 - **Values.** AFE and ALE values are PSI: the exon's use among the gene's first (last) exons. The HIT index (−1 to 1)
   is not PSI and has its own rules: no 0/1 check, and a hit needs |Δ| > 0.20 (`hit_min_abs_delta`). Pages say "HIT
   index" where they would say PSI. See [docs/methods.md](docs/methods.md#event-types-and-their-values).
@@ -296,6 +300,7 @@ annotation, and checks against SpliceImpactR.
 | Model notes | under 10 events per term; PSI IQR under 0.05 | settings `cox_events_per_term`, `narrow_psi_below` |
 | KM split | median | `--km-split mean` or `--km-split 0.5`; `--km-split-expression` for expression |
 | HIT-index events | left out of `analyse` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
+| q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
@@ -363,7 +368,9 @@ Each splicing p value has a Benjamini–Hochberg q within its gene, with each ki
 - the Cox PSI term (per endpoint and model).
 
 The pages print q beside p and name the family in a footnote. Families of fewer than 10 tests get no q. HIT-index
-events, when included, form families of their own. Hit rules, filled markers and the probe ranking stay on p. Details:
+events, when included, form families of their own. A `*` marks each q below 0.05: after the q itself, after the
+forest's CI and after the tested term's p in the model rows, and in the probe overview. It is separate from the
+filled markers, which show p < 0.05. The `q_mark_below` setting changes the threshold (0 = no marks). Hit rules, filled markers and the probe ranking stay on p. Details:
 [docs/methods.md](docs/methods.md#multiple-testing-q-values).
 
 ## Host-gene expression page
@@ -408,7 +415,7 @@ models already adjust PSI for expression.
   - Columns: `events` and `cohorts` (both separated by `;`), `endpoint`, and optionally `stem`.
   - The statistics are computed and the GTF is read only once.
 - **Two events.** Two events of the same gene can share a figure, for example two retained introns.
-- **Smaller GTF.** `splice-assay gtf-subset gencode.gtf.gz --events events.csv --out small.gtf.gz` keeps only the
+- **Smaller GTF.** `splice-assay gtf-subset gencode.gtf.gz --events my_data/psi.csv --out small.gtf.gz` keeps only the
   records near your events.
 
 ## Settings
