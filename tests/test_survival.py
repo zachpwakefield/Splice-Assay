@@ -95,7 +95,7 @@ def test_separation_fails_the_fit():
 def test_survival_hit_flag(results):
     sv = results.survival.set_index(["event_id", "cohort", "endpoint"])
     assert sv.loc[("SYN1:SE:1", "COH1", "OS")].survival_hit
-    assert set(results.survival.cox_model) == {"PSI + host expression"}
+    assert set(results.survival.cox_model) == {"PSI + host expression"}     # analyse leaves out the HIT index
 
 
 def test_covariates_and_strata_equal_a_direct_lifelines_fit(ds):
@@ -227,3 +227,23 @@ def test_stratified_models_get_a_proportional_hazards_test(ds):
     m = CoxModel(covariates=("age",), strata=("sex",))
     res = sa.analyse(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
     assert np.isfinite(res.survival.iloc[0].ph_p) and res.cox_terms.ph_p.notna().all()
+
+
+def test_km_split_rules():
+    """The KM split is the median by default, else the mean or a value set in the settings; Cox does not change."""
+    from splice_assay.stats.survival import expression_cell
+    x, pos, t, e = cohort(4)
+    med, _ = survival_cell(x, pos, t, e, None, S)
+    assert med["cutoff"] == np.median(x) and med["km_split"] == "median"
+    mean, _ = survival_cell(x, pos, t, e, None, Settings(km_split="mean"))
+    assert np.isclose(mean["cutoff"], x.mean()) and mean["km_split"] == "mean"
+    assert mean["n_high"] == (x > x.mean()).sum() and mean["cox_p"] == med["cox_p"]
+    fixed, _ = survival_cell(x, pos, t, e, None, Settings(km_split="0.5"))        # a number from the command line
+    assert fixed["cutoff"] == 0.5 and fixed["km_split"] == "set" and fixed["n_high"] == (x > 0.5).sum()
+    assert survival_cell(x, pos, t, e, None, Settings(km_split=2.0))[0]["km_status"] != "tested"   # one arm empty
+    with pytest.raises(ValueError, match='"median", "mean" or a number'):
+        Settings(km_split="max")
+    g = np.log2(1 + 30 * x)                                    # expression has its own rule
+    assert expression_cell(g, pos, t, e, Settings(km_split=0.5))[0]["km_split"] == "median"
+    row, _ = expression_cell(g, pos, t, e, Settings(km_split_expression="mean"))
+    assert row["km_split"] == "mean" and np.isclose(row["cutoff"], g.mean())

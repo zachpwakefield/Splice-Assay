@@ -13,10 +13,11 @@ import numpy as np
 import pandas as pd
 
 from .. import provenance as P
-from ..analysis import Results, analyse, analyse_expression
+from ..analysis import Results, analyse, analyse_expression, event_settings
 from ..annotation import GeneModel, gene_model, read_gtf
 from ..config import Settings
 from ..dataset import Dataset, InputError, read_table
+from .. import events as EV
 from ..events import geometry
 from ..stats.survival import CoxModel
 from . import forest as F
@@ -44,6 +45,7 @@ def _get(row, key, default=NAN):
 
 
 _safe = safe_name
+W_DETAIL = 6.96                             # inches of text for the event-detail lines under the title
 
 
 def _highlight(h, events, endpoint) -> tuple[dict, dict]:
@@ -148,7 +150,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                 highlight_legend: str | None = None, focus=None, cox_name: str = "Cox",
                 endpoint_label: str | None = None, out_dir=None, stem: str | None = None,
                 results: Results | None = None, detail=None, layout: str = "auto", proteins=None,
-                gex: bool = True, detail_results: Results | None = None, part: tuple | None = None) -> Panel:
+                detail_results: Results | None = None, part: tuple | None = None) -> Panel:
     """Draw (and, with out_dir, save) the panel of one or two events of one gene for one endpoint.
 
     events           one or two event IDs of the same gene
@@ -170,8 +172,6 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                      are shown for three or more cells
     proteins         a protein cache (protein.ProteinCache or its folder) or {event: ProteinChange}: adds a band
                      under the schematic with the suggested protein of each form, when there is a good match
-    gex              with an expression table: add the host gene's own expression for each cohort shown: case vs
-                     reference, a KM split at its median, and Cox on expression + the model rows' clinical terms
     part             (i, n) for page i of n when the cohorts are split over several pages (`page_parts`): the title
                      says so and the default stem ends in _p<i>of<n>; each page keeps the full forest
     """
@@ -195,15 +195,28 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     if not chrom or strand not in ("+", "-"):
         raise InputError(f"event {events[0]}: chrom and strand are needed to draw it")
     geoms = [geometry(e, ev.loc[e]) for e in events]
+    qty = EV.quantity(geoms[0].event_type)                  # PSI, or HIT index for HIT events
+    if any(EV.quantity(g.event_type) != qty for g in geoms):
+        raise InputError("the events of one page must measure the same quantity (PSI, or the HIT index)")
+    q_lim = (-1.05, 1.05) if qty != "PSI" else None
+    s_ev = event_settings(geoms[0].event_type, settings or Settings())     # its hit threshold
     if endpoint not in ds.endpoints:
         raise InputError(f"endpoint {endpoint} is not in the survival table")
     for c in cohorts:
         if c not in ds.cohorts:
             raise InputError(f"cohort {c} is not in the samples table")
     focus = [(e, c) for e in events for c in cohorts] if focus is None else [(str(e), str(c)) for e, c in focus]
-    gene_ids = list(ds.events.index[ds.events.gene.isin(set(ev.gene))])   # the q family: the gene's events
+    same = ds.events.gene.isin(set(ev.gene))                # the q family: the gene's events of this quantity
+    gene_ids = [e for e in ds.events.index[same] if EV.quantity(ds.events.at[e, "event_type"]) == qty]
+    hit_apart = qty == "PSI" and bool(ds.events.event_type[same].map(EV.opt_in).any())   # HIT has its own family
     if results is None:
         results = analyse(ds, events=gene_ids, endpoints=[endpoint], settings=s, model=model)
+    missing = [e for e in events if e not in set(results.groups.event_id)]
+    if missing:
+        raise InputError(f"results= does not cover {', '.join(missing)}"
+                         + (" (HIT-index events are analysed only on request: include_hit=True)"
+                            if any(EV.opt_in(ds.events.at[e, "event_type"]) for e in missing) else "")
+                         + "; leave results out to analyse them here")
     model = results.model if model is None else model
     tn = results.groups[results.groups.event_id.isin(events)].set_index(["event_id", "cohort"])
     sv = results.survival[results.survival.event_id.isin(events) & results.survival.endpoint.eq(endpoint)]
@@ -215,7 +228,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     ylabel = endpoint_label or ENDPOINT_NAMES.get(endpoint, endpoint)
     has_ref = ds.has_reference
     use_expr = ds.expression is not None and model.expression
-    model_note = f"Cox: {model.describe(use_expr)}"
+    model_note = f"Cox: {model.describe(use_expr).replace('PSI', qty, 1)}"
 
     # ------------------------------------------------------------------ forest records
     fc = {c for _, c in focus} | {c for (_, c) in marks}
@@ -238,7 +251,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
             d["paired_n"] = _get(t_, "paired_n_pairs")
             ok = v_.cox_status == "tested"
             for k_out, k_in in (("hr", "hr_per_iqr"), ("lo", "ci_low_iqr"), ("hi", "ci_high_iqr"), ("cox_p", "cox_p"),
-                                ("cox_q", "cox_q"), ("cox_beta", "cox_beta"), ("cox_se", "cox_se")):
+                                ("cox_q", "cox_q"), ("cox_beta", "cox_beta"), ("cox_se", "cox_se"), ("ph_p", "ph_p")):
                 d[k_out] = float(_get(v_, k_in)) if ok else NAN
             for k in ("cox_n", "cox_events", "psi_iqr"):
                 d[k] = _get(v_, k)
@@ -253,14 +266,17 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     if layout not in ("auto", "side", "stacked"):
         raise InputError('layout must be "auto", "side" or "stacked"')
     stacked = detail_model is not None and (layout == "stacked" or (layout == "auto" and n_rows >= 3))
-    top, sch_h, gap1 = 0.30, SCH.height(n_ev, gm is not None), 0.14
+    details = [(lab, EV.describe(g, str(ev.at[e, "chrom"]), str(ev.at[e, "strand"])))
+               for e, lab, g in zip(events, labels, geoms)]
+    detail_lines = [(lab, line) for lab, d in details
+                    for line in PR._wrap(f"{lab}: {d}", W_DETAIL, 6.2)]  # under the title, one per event (wrapped)
+    top, sch_h, gap1 = 0.30 + 0.14 * len(detail_lines), SCH.height(n_ev, gm is not None), 0.14
     row_title, tab_h = (0.52, 0.66) if has_ref else (0.46, 0.62)
     qcols = [c for c in ("paired_q", "unpaired_q") if c in tn.columns]
     any_q = bool(any(np.isfinite(float(_get(tn.loc[f], c))) for f in focus for c in qcols if f in tn.index) or
                  any(np.isfinite(float(_get(sv.loc[f], "km_q"))) for f in focus if f in sv.index))
     if any_q:
         row_title += 0.10                                   # a line for q above the views
-    gex_title = row_title                                   # the expression rows reserve their own PH line
     if _any_km_ph([_get(sv.loc[f], "km_ph_p") for f in focus if f in sv.index], s):
         row_title += 0.10                                   # a line for a KM proportional-hazards note
     forest_h = (0.106 if n_ev == 1 else 0.18) * len(fcoh)
@@ -294,7 +310,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     col_ev = S.TYPE_COLOR.get(geoms[0].event_type, S.TYPE_DEFAULT)
     paired_drawn = has_ref and any(_get(tn.loc[f], "paired_status", "") == "tested" for f in focus)
     all_drawn = has_ref and any(_get(tn.loc[f], "unpaired_status", "") == "tested" for f in focus)
-    first = [("exon", "Exon"), ("var", "Region measured by PSI")]
+    first = [("exon", "Exon"), ("var", f"Region measured by {qty}")]
     if any(g.other for g in geoms):
         first.append(("other", "Other exon"))
     span = (min(g.span[0] for g in geoms), max(g.span[1] for g in geoms))
@@ -303,7 +319,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                                                                 (gm.nested.start < win[1])])
     if nested_shown:
         first.append(("sno", nested_label[:-1] if nested_label.endswith("s") else nested_label))
-    first += [("arc_up", "Junction of the PSI form"), ("arc_dn", "of the other form")]
+    if any(g.psi_arcs or g.other_arcs for g in geoms):      # junction arcs are drawn (none for AFE, ALE or HIT)
+        first += [("arc_up", "Junction of the PSI form"), ("arc_dn", "of the other form")]
     cl = S.in_sentence(glab["case"])
     second = [("up", f"Higher in {cl}"), ("down", f"Lower in {cl}")] if paired_drawn else []
     if all_drawn:
@@ -313,9 +330,12 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     band_text = highlight_legend or ((f"{highlight_title} cell (letter: {highlight_title.lower()})" if highlight_title
                                       else "Highlighted cell") if marks else "Cohort shown at left")
     second += [("hs", f"{cox_name} p < {s.alpha:g}"), ("hn", f"{cox_name} p ≥ {s.alpha:g}"), ("band", band_text)]
+    if _ph_marked(focus, fcoh, sv, band, s):
+        second.append(("ph", f"non-proportional hazards (p < {s.ph_note_below:g})"))
     lines = _legend_lines(W, first, second)
     legend_h = 0.42 + 0.15 * (len(lines) - 2)
-    q_lines = PR._wrap(_q_note(gene, endpoint, tn, sv, detail_results, s), W - 0.26, 5.4)
+    fam = "HIT-index events" if qty != "PSI" else ("PSI events (HIT index apart)" if hit_apart else "events")
+    q_lines = PR._wrap(_q_note(gene, endpoint, tn, sv, detail_results, s, fam), W - 0.26, 5.4)
     legend_h += 0.05 + 0.115 * len(q_lines)
     if band is not None:                                    # one column layout for every model forest (aligned)
         band["cols"] = terms_columns(L["model"][1] if stacked else band["width"],
@@ -324,10 +344,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     pbands = [b for b in (PR.prepare(changes.get(e), W, col_ev, lab if n_ev == 2 else "")
                           for e, lab in zip(events, labels)) if b is not None]
     prot_h = sum(b["height"] for b in pbands) + (0.06 if pbands else 0.0)
-    gx = _gex_section(ds, focus, endpoint, s, detail_model or model, W, has_ref, marks, label_w, gex_title,
-                      tab_h) if gex else None
-    gex_h = gx["height"] if gx else 0.0
-    H = top + sch_h + prot_h + gap1 + main_h + after_h + gex_h + legend_h
+    H = top + sch_h + prot_h + gap1 + main_h + after_h + legend_h
     fx = lambda x: x / W                                                     # noqa: E731
     fy = lambda y: 1 - y / H                                                 # y in inches from the top  # noqa: E731
     rows: list[dict] = []
@@ -345,6 +362,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         if tw + S.text_width(title_rest, 8.5, weight="bold") > W - 0.15:     # too many to list: count them
             title_rest = " · ".join([_and(labels), f"{len(shown)} cohorts"] + tail)
         fig.text(fx(tw), fy(0.10), title_rest, fontsize=8.5, fontweight="bold", ha="left", va="top")
+        for i, (_, line) in enumerate(detail_lines):           # what the event is, in 1-based coordinates
+            fig.text(fx(0.12), fy(0.30 + 0.14 * i), line, fontsize=6.2, color=S.INK2, ha="left", va="top")
+            rows.append(dict(panel="event_detail", text=line))
         # schematic
         ax_s = fig.add_axes([fx(1.05), fy(top + sch_h), fx(W - 1.05 - 0.15), sch_h / H])
         span = (min(g.span[0] for g in geoms), max(g.span[1] for g in geoms))
@@ -378,9 +398,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
             v = ds.psi.loc[e]
             if has_ref:
                 ax_tn = fig.add_axes([fx(L["tn"][0]), fy(y_row + row_title + ax_h), fx(L["tn"][1]), ax_h / H])
-                _group_view(fig, ax_tn, ds, e, c, v, t_, v_, s, glab, rows, printed, tag)
+                _group_view(fig, ax_tn, ds, e, c, v, t_, v_, s, glab, rows, printed, tag, quantity=qty, lim=q_lim)
             ax_km = fig.add_axes([fx(L["km"][0]), fy(y_row + row_title + ax_h), fx(L["km"][1]), ax_h / H])
-            _km_view(fig, ax_km, ds, e, c, v, v_, endpoint, ylabel, s, rows, printed, tag)
+            _km_view(fig, ax_km, ds, e, c, v, v_, endpoint, ylabel, s, rows, printed, tag, what=qty)
             if stacked:                                     # this cell's model, right of its KM
                 rows += _draw_cell_model(fig, W, H, y_row + 0.06, L["model"], band, band["cells"][ri], s)
             rows.append(dict(panel="focus_cell", tag=tag, endpoint=endpoint, event_id=e, cohort=c, label=mark,
@@ -393,8 +413,10 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         axL = fig.add_axes([fx(L["axL"][0]), fy0, fx(L["axL"][1]), fh]) if has_ref else None
         axR = fig.add_axes([fx(L["axR"][0]), fy0, fx(L["axR"][1]), fh])
         lim, xlo, xhi, n_clip = F.axis_limits(recs_by)
-        F.set_axes(axL, axR, lim, xlo, xhi, s.min_abs_delta, glab, model_note)
-        F.draw(fig, axL, axR, fx(L["lab_x"]), fx(L["mark_x"]), fcoh, recs_by, n_ev, s.alpha, cox_name, mark_colors)
+        F.set_axes(axL, axR, lim, xlo, xhi, s_ev.min_abs_delta, glab, model_note, quantity=qty,
+                   hr_label=f"HR per IQR\nof {qty} (95% CI)")
+        F.draw(fig, axL, axR, fx(L["lab_x"]), fx(L["mark_x"]), fcoh, recs_by, n_ev, s.alpha, cox_name, mark_colors,
+               ph_below=s.ph_note_below)
         rows.append(dict(panel="forest_axis", hr_axis_low=xlo, hr_axis_high=xhi, n_ci_clipped=n_clip,
                          cox_model=model_note))
         for c in fcoh:
@@ -422,10 +444,6 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         elif band:
             fig.text(fx(0.12), fy(y_main + main_h + 0.02), "Cox models: " + MODEL_NOTE.format(alpha=s.alpha),
                      fontsize=5.6, color=S.MUTED, ha="left", va="top")
-        # ------------------------------------------------------------------ host-gene expression
-        if gx:
-            rows += _draw_gex(fig, W, H, y_main + main_h + after_h, gx, ds, endpoint, ylabel, s, glab, has_ref,
-                              row_title, tab_h)
         # ------------------------------------------------------------------ legend
         for i, line in enumerate(q_lines):                 # the q footnote, at the very bottom
             fig.text(fx(0.12), fy(H - 0.08 - 0.115 * (len(q_lines) - 1 - i)), line, fontsize=5.4, color=S.MUTED,
@@ -452,6 +470,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                           lw=1.1))
                 elif kind == "split":
                     fig.add_artist(Line2D([fx(x), fx(x + 0.16)], [yy, yy], color=S.INK, lw=0.6, ls=(0, (2, 1.5))))
+                elif kind == "ph":
+                    fig.text(fx(x + 0.08), yy, F.PH_MARK, fontsize=7, color=S.INK, ha="center", va="center")
                 elif kind == "band":
                     fig.add_artist(Rectangle((fx(x), yy - 0.05 / H), fx(0.16), 0.10 / H, facecolor=S.PAPER, lw=0))
                     if any(marks.values()):                     # the first label present, in sorted order
@@ -478,8 +498,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                             gtf=None if gtf is None or isinstance(gtf, pd.DataFrame) else str(gtf),
                             detail_model=None if detail_model is None else detail_model.to_dict(),
                             proteins=_protein_source(proteins),
-                            protein_status={e: changes[e].status for e in events if e in changes},
-                            gex=None if not gx else dict(gene=gx["gene"], model=gx["model"].to_dict())))
+                            protein_status={e: changes[e].status for e in events if e in changes}))
     paths = {}
     if out_dir is not None:
         paths = S.save(fig, out_dir, stem, s.formats, s.dpi, table, prov)
@@ -498,7 +517,7 @@ def _model_band(ds, focus, endpoint, s, model, W, results=None) -> dict:
         try:
             row, terms = model_terms(ds, e, c, endpoint, model, s, results)
             cells.append(dict(event=e, cohort=c, row=row, terms=terms, disp=display_rows(terms), error="",
-                              q=float(_get(row, "cox_q"))))
+                              q=float(_get(row, "cox_q")), qty=EV.quantity(ds.events.at[e, "event_type"])))
         except InputError as err:
             cells.append(dict(event=e, cohort=c, row=None, terms=None, disp=[], error=str(err)))
     ncol = 1 if len(cells) == 1 else 2
@@ -529,26 +548,39 @@ def _family(frame, col):
     return int(v.max()) if len(v) else None
 
 
-def _q_note(gene, endpoint, tn, sv, detail_results, s) -> str:
-    """The footnote naming the q families, with their sizes as computed."""
+def _q_note(gene, endpoint, tn, sv, detail_results, s, fam: str = "events") -> str:
+    """The footnote naming the q families, with their sizes as computed. `fam`: the events in them ('events', or
+    'HIT-index events', which form families of their own)."""
     adj = None
     if detail_results is not None and len(detail_results.survival):
         d = detail_results.survival
         adj = _family(d[d.gene.eq(gene) & d.endpoint.eq(endpoint)], "cox_q_tests")
     fams = [("within patients", _family(tn, "paired_q_tests")), ("all samples", _family(tn, "unpaired_q_tests")),
-            ("KM", _family(sv, "km_q_tests")), ("Cox PSI term, forest", _family(sv, "cox_q_tests")),
+            ("KM", _family(sv, "km_q_tests")), ("Cox, forest", _family(sv, "cox_q_tests")),
             ("model rows", adj)]
     sizes = ", ".join(f"{name} {n}" for name, n in fams if n)
-    note = (f"q: Benjamini–Hochberg within {gene} for {endpoint}, one family per kind of test over all its events × "
-            f"cohorts ({sizes or 'no tests'} tests); none for families under {s.fdr_min_family}. "
-            "Host-gene expression is not adjusted.")
+    note = (f"q: Benjamini–Hochberg within {gene} for {endpoint}, one family per kind of test over all its {fam} × "
+            f"cohorts ({sizes or 'no tests'} tests); none for families under {s.fdr_min_family}.")
     return note + (f" Settings changed from the defaults: {s.changed_text()}." if s.changed() else "")
 
 
 def _q(cell) -> str:
-    """' · PSI q 0.031' for a model whose PSI term has a q value, else ''."""
+    """' · PSI q 0.031' (or 'HIT index q') for a model whose tested term has a q value, else ''."""
     q = cell.get("q", NAN)
-    return f" · PSI q {S.fp(q)}" if np.isfinite(q) else ""
+    return f" · {cell.get('qty', 'PSI')} q {S.fp(q)}" if np.isfinite(q) else ""
+
+
+def _ph_marked(focus, fcoh, sv, band, s) -> bool:
+    """Whether the page draws a proportional-hazards dagger: a KM panel, the forest (base model) or a model row."""
+    if not s.ph_note_below > 0:
+        return False
+    low = (lambda v: v is not None and np.isfinite(float(v)) and float(v) < s.ph_note_below)
+    if any(low(_get(sv.loc[f], "km_ph_p")) for f in focus if f in sv.index):
+        return True
+    if any(low(_get(r, "ph_p")) for (e, c), r in sv.iterrows() if c in set(fcoh) and _get(r, "cox_status") == "tested"):
+        return True
+    return bool(band) and any(d["r"] is not None and low(getattr(d["r"], "ph_p", None))
+                              for cell in band["cells"] for d in cell["disp"])
 
 
 def _any_km_ph(values, s) -> bool:
@@ -599,7 +631,7 @@ def _draw_cell_model(fig, W, H, top, box, band, cell, s) -> list[dict]:
     for k, line in enumerate(_model_lines(_cell_model_text(r, band), width, 5.6)):
         fig.text(fx(x0), fy(top + 0.15 + k * MODEL_LINE), line, fontsize=5.6, color=S.INK2, ha="left", va="top")
     drawn = draw_terms(fig, W, H, top + 0.50 + band.get("stack_extra", 0.0), x0, width, cell["disp"], s.alpha,
-                       BAND_PITCH, fs=5.8, tag=tag,
+                       BAND_PITCH, fs=5.8, tag=tag, ph_below=s.ph_note_below,
                        xlim=band["xlim"], cols=band["cols"])
     return [dict(panel="cox_detail", cox_model=_cell_model_text(r, band), cox_n=int(r.cox_n),
                  cox_events=int(r.cox_events), **d) for d in drawn]
@@ -631,7 +663,7 @@ def _draw_band(fig, W, H, y0, band, s, n_ev) -> list[dict]:
         for k, line in enumerate(_model_lines(text, band["width"], 5.8)):
             fig.text(fx(x0), fy(top + 0.19 + k * MODEL_LINE), line, fontsize=5.8, color=S.INK2, ha="left", va="top")
         drawn = draw_terms(fig, W, H, top + BAND_HEAD + band["head_extra"], x0, band["width"], cell["disp"], s.alpha,
-                           BAND_PITCH, fs=5.9,
+                           BAND_PITCH, fs=5.9, ph_below=s.ph_note_below,
                            tag=tag, xlim=band["xlim"], cols=band["cols"])
         rows += [dict(panel="cox_detail", cox_model=_cell_model_text(r, band), cox_n=int(r.cox_n),
                       cox_events=int(r.cox_events), **d) for d in drawn]
@@ -644,16 +676,23 @@ def _draw_band(fig, W, H, y0, band, s, n_ev) -> list[dict]:
 GEX_HEAD = 0.48
 
 
-def _gex_section(ds, focus, endpoint, s, model, W, has_ref, marks, label_w, row_title, tab_h) -> dict | None:
-    """The expression rows: statistics of the host gene in each cohort shown, and their layout (one row per cohort,
-    as the stacked layout); None without expression or survival data for the gene."""
-    gene = ds.events.at[focus[0][0], "expression_gene"]
+def _expression_model(model: CoxModel) -> CoxModel:
+    """The Cox model of the expression rows: expression itself plus the given model's clinical terms."""
+    return CoxModel(expression=False, covariates=model.covariates, categorical=model.categorical, strata=model.strata,
+                    scale=model.scale, baseline=dict(model.baseline))
+
+
+def _gex_section(ds, gene, coh, endpoint, s, model, W, has_ref, marks, label_w, row_title, tab_h,
+                 res=None) -> dict | None:
+    """The expression rows: statistics of the host gene in each cohort given, and their layout (one row per cohort,
+    as the stacked layout); None without expression or survival data for the gene. `res` may hold the gene's
+    expression results already (any superset of the cohorts)."""
     if ds.expression is None or gene not in ds.expression.index or ds.survival is None:
         return None
-    gm = CoxModel(expression=False, covariates=model.covariates, categorical=model.categorical, strata=model.strata,
-                  scale=model.scale, baseline=dict(model.baseline))
-    coh = list(dict.fromkeys(c for _, c in focus))
-    res = analyse_expression(ds, genes=[gene], endpoints=[endpoint], cohorts=coh, settings=s, model=gm)
+    gm = _expression_model(model)
+    coh = list(dict.fromkeys(coh))
+    if res is None:
+        res = analyse_expression(ds, genes=[gene], endpoints=[endpoint], cohorts=coh, settings=s, model=gm)
     cells = []
     for c in coh:
         v = res.survival[res.survival.cohort.eq(c)].iloc[0]
@@ -681,6 +720,172 @@ def _gex_section(ds, focus, endpoint, s, model, W, has_ref, marks, label_w, row_
                 height=GEX_HEAD + len(coh) * row_h + 0.12)
 
 
+def _split_words(rule) -> str:
+    """'its median', 'its mean' or '4.5 (set)' for a KM split rule."""
+    return f"its {rule}" if isinstance(rule, str) else f"{rule:g} (set)"
+
+
+def expression_panel(ds: Dataset, gene: str, cohorts, endpoint: str, *, settings: Settings | None = None,
+                     model: CoxModel | None = None, out_dir=None, stem: str | None = None,
+                     part: tuple | None = None, endpoint_label: str | None = None) -> Panel | None:
+    """The host gene's own expression on one page, drawn once per gene (after its splicing pages in a probe).
+
+    A forest of every cohort with a test (case-vs-reference delta of expression, and the Cox HR per SD of expression),
+    then one row per cohort given: group view, KM split, and Cox on expression plus `model`'s clinical terms (the
+    tested term is expression itself). None when the gene has no expression values or there is no survival table.
+    Expression is not adjusted for multiple testing.
+    """
+    import matplotlib
+    from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Rectangle
+
+    s = settings or Settings()
+    model = model or CoxModel()
+    if ds.expression is None or gene not in ds.expression.index or ds.survival is None:
+        return None
+    cohorts = [c for c in dict.fromkeys(_as_list(cohorts)) if c in set(ds.cohorts)]
+    if not cohorts:
+        raise InputError(f"{gene}: none of the cohorts is in the data")
+    gm = _expression_model(model)
+    res = analyse_expression(ds, genes=[gene], endpoints=[endpoint], settings=s, model=gm)
+    gs = res.groups.set_index("cohort")
+    vs = res.survival.set_index("cohort")
+    fcoh = [c for c in ds.cohorts if c in set(cohorts) or (c in vs.index and (
+        _get(vs.loc[c], "cox_status") in ("tested", "failed") or _get(gs.loc[c], "unpaired_status") == "tested"))]
+    glab = dict(case=s.case_label or ds.labels["case"], reference=s.reference_label or ds.labels["reference"])
+    ylabel = endpoint_label or ENDPOINT_NAMES.get(endpoint, endpoint)
+    has_ref = ds.has_reference
+    W = 7.2
+    label_w = max(S.text_width(c, 6.0, weight="bold") for c in fcoh)
+    row_title, tab_h = (0.52, 0.66) if has_ref else (0.46, 0.62)
+    gx = _gex_section(ds, gene, cohorts, endpoint, s, model, W, has_ref, {}, label_w, row_title, tab_h, res=res)
+    L = _stacked_layout(W, has_ref, {}, label_w)
+    recs = {}
+    for c in fcoh:
+        g_, v_ = gs.loc[c], vs.loc[c]
+        ok = _get(v_, "cox_status") == "tested"
+        d = dict(event_id=gene, mark="", shade=c in set(cohorts), cox_status=_get(v_, "cox_status"))
+        for design in ("paired", "unpaired"):
+            st = _get(g_, f"{design}_status")
+            d[f"{design}_status"] = st
+            d[f"{design}_delta"] = float(_get(g_, f"{design}_delta_median")) if st == "tested" else NAN
+            d[f"{design}_p"] = float(_get(g_, f"{design}_p")) if st == "tested" else NAN
+        for k_out, k_in in (("hr", "hr_per_sd"), ("lo", "ci_low_sd"), ("hi", "ci_high_sd"), ("cox_p", "cox_p"),
+                            ("ph_p", "ph_p")):
+            d[k_out] = float(_get(v_, k_in)) if ok else NAN
+        recs[c] = [d]
+    top, sub_h = 0.30, 0.20
+    forest_h = 0.106 * len(fcoh)
+    forest_block = 0.25 + forest_h + 0.85
+    first = []
+    second = []
+    paired_drawn = has_ref and any(_get(gs.loc[c], "paired_status") == "tested" for c in cohorts if c in gs.index)
+    cl = S.in_sentence(glab["case"])
+    if paired_drawn:
+        second += [("up", f"Higher in {cl}"), ("down", f"Lower in {cl}")]
+    if has_ref:
+        second += [("split", "KM split"), ("pd", "Paired Δ"), ("ud", "Unpaired Δ")]
+    second += [("hs", f"Cox p < {s.alpha:g}"), ("hn", f"Cox p ≥ {s.alpha:g}"), ("band", "Cohort drawn below")]
+    low = (lambda v: s.ph_note_below > 0 and v is not None and np.isfinite(float(v)) and float(v) < s.ph_note_below)
+    if any(low(r[0]["ph_p"]) for r in recs.values()) or (gx and any(
+            low(_get(cell["v"], "km_ph_p")) or any(d["r"] is not None and low(getattr(d["r"], "ph_p", None))
+                                                   for d in cell["disp"]) for cell in gx["cells"])):
+        second.append(("ph", f"non-proportional hazards (p < {s.ph_note_below:g})"))
+    lines = _legend_lines(W, first, second)
+    lines = [ln for ln in lines if ln]
+    note = (f"Host-gene expression of {gene} on the expression table's scale; not adjusted for multiple testing. A "
+            f"{S.in_sentence(glab['case'])}–{S.in_sentence(glab['reference'])} hit needs p < {s.alpha:g} and "
+            f"|Δ median| > {s.gex_min_abs_delta:g}. "
+            f"The HR is per SD of expression in each cohort, with {', '.join(gm.covariates) or 'no other terms'}."
+            + (f" Settings changed from the defaults: {s.changed_text()}." if s.changed() else ""))
+    note_lines = PR._wrap(note, W - 0.26, 5.4)
+    legend_h = 0.42 + 0.15 * (len(lines) - 1) + 0.05 + 0.115 * len(note_lines)
+    rows_h = gx["height"] if gx else 0.0
+    H = top + sub_h + forest_block + rows_h + legend_h
+    fx = lambda x: x / W                                                     # noqa: E731
+    fy = lambda y: 1 - y / H                                                 # noqa: E731
+    rows: list[dict] = []
+    with matplotlib.rc_context(S.rc()):
+        fig = Figure(figsize=(W, H))
+        title = f"{gene} expression"
+        fig.text(fx(0.12), fy(0.10), gene, fontsize=8.5, fontweight="bold", style="italic", ha="left", va="top")
+        tw = 0.12 + S.text_width(gene, 8.5, style="italic", weight="bold") + 0.05
+        sub_ = (ds.notes or {}).get("subset")
+        tail = [endpoint] + ([f"subset: {_subset_name(sub_)}"] if sub_ else []) + (
+            [f"page {part[0]} of {part[1]}"] if part else [])
+        rest = " · ".join(["expression", _and(cohorts)] + tail)
+        if tw + S.text_width(rest, 8.5, weight="bold") > W - 0.15:
+            rest = " · ".join(["expression", f"{len(cohorts)} cohorts"] + tail)
+        fig.text(fx(tw), fy(0.10), rest, fontsize=8.5, fontweight="bold", ha="left", va="top")
+        fig.text(fx(0.12), fy(0.30), f"The forest shows {gene} expression in every cohort with a test; the rows below "
+                 "show the cohorts drawn on its splicing pages", fontsize=6.0, color=S.INK2, ha="left", va="top")
+        # forest of every cohort
+        f_top = top + sub_h
+        fy0, fh = fy(f_top + 0.25 + forest_h), forest_h / H
+        axL = fig.add_axes([fx(L["axL"][0]), fy0, fx(L["axL"][1]), fh]) if has_ref else None
+        axR = fig.add_axes([fx(L["axR"][0]), fy0, fx(L["axR"][1]), fh])
+        lim, xlo, xhi, n_clip = F.axis_limits(recs)
+        F.set_axes(axL, axR, max(lim, 1.2 * s.gex_min_abs_delta), xlo, xhi, s.gex_min_abs_delta, glab,
+                   f"Cox: {gm.describe(False).replace('PSI', 'expression', 1)}", quantity="expression",
+                   hr_label="HR per SD of\nexpression (95% CI)")
+        F.draw(fig, axL, axR, fx(L["lab_x"]), fx(L["mark_x"]), fcoh, recs, 1, s.alpha, "Cox",
+               ph_below=s.ph_note_below)
+        rows.append(dict(panel="gex_forest_axis", hr_axis_low=xlo, hr_axis_high=xhi, n_ci_clipped=n_clip))
+        for c in fcoh:
+            r = recs[c][0]
+            rows.append(dict(panel="gex_forest", endpoint=endpoint, gene=gene, cohort=c, shade=r["shade"],
+                             paired_status=r["paired_status"], paired_delta_median=r["paired_delta"],
+                             paired_p=r["paired_p"], unpaired_status=r["unpaired_status"],
+                             unpaired_delta_median=r["unpaired_delta"], unpaired_p=r["unpaired_p"],
+                             cox_status=r["cox_status"], hr_per_sd=r["hr"], ci_low_sd=r["lo"], ci_high_sd=r["hi"],
+                             cox_p=r["cox_p"], ph_p=r["ph_p"]))
+        # one row per cohort drawn in full
+        if gx:
+            rows += _draw_gex(fig, W, H, f_top + forest_block, gx, ds, endpoint, ylabel, s, glab, has_ref,
+                              row_title, tab_h)
+        # legend and footnote
+        for i, line in enumerate(note_lines):
+            fig.text(fx(0.12), fy(H - 0.08 - 0.115 * (len(note_lines) - 1 - i)), line, fontsize=5.4, color=S.MUTED,
+                     ha="left", va="bottom")
+        for li, items in enumerate(lines):
+            x = 0.12
+            yy = fy(H - legend_h + 0.10 + li * 0.15)
+            for kind, text in items:
+                if kind in ("up", "down"):
+                    fig.add_artist(Line2D([fx(x), fx(x + 0.16)], [yy, yy], color=S.UP if kind == "up" else S.DOWN,
+                                          lw=1.1))
+                elif kind == "split":
+                    fig.add_artist(Line2D([fx(x), fx(x + 0.16)], [yy, yy], color=S.INK, lw=0.6, ls=(0, (2, 1.5))))
+                elif kind == "band":
+                    fig.add_artist(Rectangle((fx(x), yy - 0.05 / H), fx(0.16), 0.10 / H, facecolor=S.PAPER, lw=0))
+                elif kind == "ph":
+                    fig.text(fx(x + 0.08), yy, F.PH_MARK, fontsize=7, color=S.INK, ha="center", va="center")
+                else:
+                    mk = "o" if kind in ("pd", "ud") else "D"
+                    fig.add_artist(Line2D([fx(x + 0.08)], [yy], marker=mk, ms=3.6 if mk == "o" else 3.2, ls="",
+                                          markerfacecolor=S.INK if kind in ("pd", "hs") else "white",
+                                          markeredgecolor=S.INK, mew=0.7))
+                fig.text(fx(x + 0.21), yy, text, fontsize=6, color=S.INK2, ha="left", va="center")
+                x += 0.21 + S.text_width(text, 6) + 0.2
+    table = pd.DataFrame(rows)
+    named = ([_safe(c) for c in cohorts] if len(cohorts) <= 4 else
+             [f"{len(cohorts)}cohorts", hashlib.sha1(",".join(cohorts).encode()).hexdigest()[:6]])
+    stem = stem or "_".join([_safe(gene), "expression"] + named + [_safe(endpoint)]
+                            + ([f"p{part[0]}of{part[1]}"] if part else []))
+    sv = ds.survival[ds.survival.endpoint.eq(endpoint)]
+    cl = None
+    if ds.clinical is not None and gm.clinical_columns:
+        cl = ds.clinical[[c for c in gm.clinical_columns if c in ds.clinical.columns]]
+    prov = P.record("expression_panel", s, dict(expression=ds.expression.loc[[gene]], samples=ds.samples,
+                                                  pairs=ds.pairs, survival=sv, clinical=cl),
+                    dict(gene=gene, cohorts=cohorts, endpoint=endpoint, model=gm.to_dict(), title=title))
+    paths = {}
+    if out_dir is not None:
+        paths = S.save(fig, out_dir, stem, s.formats, s.dpi, table, prov)
+    return Panel(figure=fig, table=table, paths=paths, provenance=prov, stem=stem)
+
+
 def _gex_row(r: dict) -> dict:
     """A plotted-values row of the expression section: panels prefixed gex_, PSI columns named value."""
     r = dict(r, panel=f"gex_{r['panel']}")
@@ -701,11 +906,11 @@ def _draw_gex(fig, W, H, y0, gx, ds, endpoint, ylabel, s, glab, has_ref, row_tit
     fig.text(fx(0.12), fy(y0 + 0.12), "Host-gene expression", fontsize=7.6, fontweight="bold", ha="left", va="top")
     fig.text(fx(0.12 + S.text_width("Host-gene expression", 7.6, weight="bold") + 0.06), fy(y0 + 0.12),
              f"· {gene} itself: {S.in_sentence(glab['case'])} vs {S.in_sentence(glab['reference'])}, a KM split at "
-             "its median, and "
-             f"Cox on {gx['describe']}", fontsize=6.0, color=S.INK2, ha="left", va="top")
+             f"{_split_words(s.km_split_expression)}, and Cox on {gx['describe']}", fontsize=6.0, color=S.INK2,
+             ha="left", va="top")
     v_all = ds.expression.loc[gene]
     rows = []
-    for ri, cell in enumerate(gx["cells"]):
+    for ri, cell in enumerate(gx["cells"]):  # noqa: B007
         c = cell["cohort"]
         y_row = y0 + GEX_HEAD + ri * gx["row_h"]
         ax_h = gx["row_h"] - row_title - tab_h

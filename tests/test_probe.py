@@ -55,13 +55,17 @@ def test_pick_cohorts_prefers_the_adjusted_p(ds):
 
 
 def test_probe_outputs(ds, gtf_path, tmp_path):
-    res = probe(ds, genes=["SYN1"], settings=FAST, gtf=gtf_path, out_dir=tmp_path, top=2, log=lambda *_: None)
+    logged = []
+    res = probe(ds, genes=["SYN1"], settings=FAST, gtf=gtf_path, out_dir=tmp_path, top=2, log=logged.append)
+    drawn = [x.strip().split(":")[0] for x in logged if x.startswith("  ")]  # the PDF's pages after the overview
+    assert drawn == ["page 1", "page 2", "page 3", "expression page"]         # the expression page last
     ev = res.events
     assert list(ev["rank"]) == [1, 2, 3] and set(ev.event_id) == {"SYN1:SE:1", "SYN1:A3SS:1", "SYN1:RI:1"}
     assert ev.adj_cox_p05.is_monotonic_decreasing or ev.iloc[0].adj_cox_p05 >= ev.iloc[1].adj_cox_p05
     for k in ("report", "events", "cells", "overview", "pdf"):
         assert res.paths[k].exists()
-    assert len(list((tmp_path / "pages").glob("*.png"))) == 3
+    assert len(list((tmp_path / "pages").glob("*.png"))) == 4                # and the expression page
+    assert res.paths["expression_pages"] == tmp_path / "pages" / "SYN1_expression.png"
     report = res.paths["report"].read_text()
     assert "chance alone gives about" in report and "Benjamini" in report and "(pages/001_" in report
     cells = pd.read_csv(res.paths["cells"])
@@ -71,8 +75,10 @@ def test_probe_outputs(ds, gtf_path, tmp_path):
 
 def test_probe_every_event_without_adjustment(ds, tmp_path):
     res = probe(ds, settings=FAST, adjusted=None, out_dir=tmp_path, max_pages=1, log=lambda *_: None)
-    assert len(res.events) == 4 and "adj_cox_p" not in res.cells.columns
-    assert len(list((tmp_path / "pages").glob("*.png"))) == 1
+    assert len(res.events) == 8 and "adj_cox_p" not in res.cells.columns          # the HIT index is left out
+    assert "2 HIT-index events were left out" in res.paths["report"].read_text()
+    names = sorted(p.name for p in (tmp_path / "pages").glob("*.png"))      # one event page, then its gene's expression
+    assert len(names) == 2 and names[1] == f"{res.events.gene.iloc[0]}_expression.png"
 
 
 def test_cli_probe_and_default_panel(tmp_path, capsys):
@@ -88,7 +94,9 @@ def test_cli_probe_and_default_panel(tmp_path, capsys):
                  str(_fast(tmp_path))]) == 0
     text = capsys.readouterr().out
     assert "cohorts shown (most promising of 4)" in text and "age + sex + stage" in text
-    fig = pd.read_csv(next((tmp_path / "pn").glob("*.csv")), low_memory=False)
+    csv = sorted((tmp_path / "pn").glob("*.csv"))
+    assert [p.name.startswith("SYN1_expression_") for p in csv] == [False, True]     # the page, its gene's expression
+    fig = pd.read_csv(csv[0], low_memory=False)
     assert fig[fig.panel.eq("cox_detail")].tag.nunique() == 3
 
 
@@ -108,8 +116,8 @@ def test_top_all_shows_every_tested_cohort(ds, tmp_path):
     tested = set(res.cells[res.cells.cox_status.eq("tested") | res.cells.km_status.eq("tested")].cohort)
     assert set(res.pages[0][2]) == tested and len(tested) == 4
     assert "every cohort with a test" in res.paths["report"].read_text()
-    page = next((tmp_path / "pages").glob("*.png")).name
-    assert page == "001_SYN1_SE_1.png"
+    assert sorted(p.name for p in (tmp_path / "pages").glob("*.png")) == ["001_SYN1_SE_1.png",
+                                                                          "SYN1_expression.png"]
 
 
 def test_many_cohorts_get_a_short_title_and_stem(tables):
@@ -141,7 +149,7 @@ def test_relaxed_gates_are_reported(ds, tmp_path):
     report = res.paths["report"].read_text()
     assert "Settings changed from the defaults:** min_pairs 7 (default 10), min_group 7 (default 10), " \
            "cox_min_events 10 (default 20)" in report
-    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s, gex=False)
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s)
     assert "Settings changed from the defaults" in " ".join(t.get_text() for t in p.figure.texts)
 
 
@@ -168,7 +176,7 @@ def test_many_cohorts_are_split_over_pages(ds, tmp_path):
     res = probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path, top=4, max_pages=1, log=lambda *_: None)
     assert [st[-3:] for _, st, _ in res.pages] == ["_p1", "_p2"] and len(sum([c for *_, c in res.pages], [])) == 4
     assert res.events.page.iloc[0].endswith("_p1.png")
-    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s, gex=False, part=(1, 2))
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s, part=(1, 2))
     assert any("page 1 of 2" in t.get_text() for t in p.figure.texts) and p.stem.endswith("_p1of2")
 
 

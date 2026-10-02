@@ -56,3 +56,22 @@ def test_mxe_psi_exon_first():
 def test_other_types_use_given_junctions():
     g = geometry("e", row("AFE", "500-600", "100-200", psi_junctions="200-500"))
     assert g.psi_arcs == ((200, 500),) and g.other_arcs == ()
+
+
+def test_describe_each_event_type():
+    """The line under a page's title: what the event is, in 1-based coordinates, and what its value measures."""
+    from splice_assay.events import describe
+    d = (lambda t, c, v, strand="+": describe(geometry("e", row(t, c, v)), "chr7", strand))
+    assert d("SE", "100-200;500-600", "300-350") == ("cassette exon chr7:301–350 (50 nt) between exons chr7:101–200 "
+                                                    "and chr7:501–600; PSI = its inclusion · plus strand")
+    assert d("RI", "100-200;500-600", "200-500", "-").startswith("retained intron chr7:201–500 (300 nt)")
+    assert d("RI", "100-200;500-600", "200-500", "-").endswith("PSI = its retention · minus strand")
+    assert d("A3SS", "100-200;500-600", "470-500").startswith(
+        "alternative 3′ splice site: the long form extends exon chr7:501–600 by chr7:471–500 (30 nt); flanking exon "
+        "chr7:101–200; PSI = long-form use")
+    assert d("MXE", "100-200;900-1000", "300-350;600-680").startswith(
+        "mutually exclusive exons chr7:301–350 (50 nt) and chr7:601–680 (80 nt)")
+    assert d("AFE", "1000-1150;2000-2100", "0-200").startswith(
+        "alternative first exon chr7:1–200 (200 nt) (2 other first exons drawn); PSI = its use among the gene's first")
+    assert d("ALE", "", "5000-5300").startswith("alternative last exon chr7:5,001–5,300 (300 nt); PSI = its use")
+    assert d("HIT", "", "3000-3100").startswith("exon chr7:3,001–3,100 (100 nt); HIT index from −1")

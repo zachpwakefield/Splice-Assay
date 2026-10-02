@@ -18,7 +18,7 @@ HIGHLIGHT = {"A": "#184f95", "B": "#6c9bd2", "C": "#c3d6ee"}
 HIGHLIGHT_DEFAULT = "#6c9bd2"
 DARK_LABELS = {"C"}                              # highlight letters drawn in ink rather than white
 TYPE_COLOR = {"SE": "#3b6fb6", "MXE": "#7b5ea7", "RI": "#b8474d", "A3SS": "#2e8b57", "A5SS": "#c98a2b",
-              "AFE": "#6b6b6b", "ALE": "#9b9b9b"}
+              "AFE": "#178f8f", "ALE": "#b5527f", "HIT": "#5b6b7f"}
 TYPE_DEFAULT = "#555555"
 FONT_CANDIDATES = ("Arial", "Liberation Sans", "Helvetica", "Nimbus Sans", "DejaVu Sans")
 

@@ -13,6 +13,7 @@ from matplotlib.patches import Rectangle
 from . import style as S
 
 NICE_LO, NICE_HI = (0.125, 0.25, 0.5), (2.0, 4.0, 8.0)
+PH_MARK = "†"                               # a proportional-hazards test below Settings.ph_note_below
 
 
 def axis_limits(recs_by_cohort: dict) -> tuple[float, float, float, int]:
@@ -33,30 +34,36 @@ def axis_limits(recs_by_cohort: dict) -> tuple[float, float, float, int]:
     return lim, xlo, xhi, n_clip
 
 
-def set_axes(axL, axR, lim, xlo, xhi, min_abs_delta, labels, model_note=""):
+def set_axes(axL, axR, lim, xlo, xhi, min_abs_delta, labels, model_note="", quantity="PSI",
+             hr_label="HR per IQR\nof PSI (95% CI)"):
+    """`quantity` names the delta axis (PSI, HIT index, expression); `hr_label` the HR axis."""
     if axL is not None:
         axL.set_xlim(-lim, lim)
-        axL.xaxis.set_major_locator(mticker.MultipleLocator(0.2))
+        axL.xaxis.set_major_locator(mticker.MultipleLocator(0.2) if lim <= 0.6 else
+                                    mticker.MaxNLocator(nbins=5, steps=[1, 2, 2.5, 5, 10]))
         for v in (-min_abs_delta, min_abs_delta):
             axL.axvline(v, color=S.MUTED, lw=0.5, ls=(0, (1.5, 1.5)), zorder=1)
         axL.axvline(0, color=S.INK2, lw=0.6, zorder=1)
-        axL.set_xlabel(f"Δ median PSI\n({S.in_sentence(labels['case'])} − {S.in_sentence(labels['reference'])})",
-                       labelpad=1)
+        axL.set_xlabel(f"Δ median {quantity}\n({S.in_sentence(labels['case'])} − "
+                       f"{S.in_sentence(labels['reference'])})", labelpad=1)
     axR.set_xscale("log")
     axR.set_xlim(xlo, xhi)
     tk = [t for t in (0.25, 0.5, 1, 2, 4, 8) if xlo <= t <= xhi]          # no 0.125 label (crowds 0.25)
     axR.set_xticks(tk, [f"{t:g}" for t in tk])
     axR.xaxis.set_minor_locator(mticker.NullLocator())
     axR.axvline(1, color=S.INK2, lw=0.6, zorder=1)
-    axR.set_xlabel("HR per IQR\nof PSI (95% CI)", labelpad=1)
+    axR.set_xlabel(hr_label, labelpad=1)
     if model_note:
         axR.annotate(model_note, xy=(0.5, 0), xycoords="axes fraction", xytext=(0, -30), textcoords="offset points",
                      ha="center", va="top", fontsize=5.4, color=S.MUTED, linespacing=1.15)
 
 
-def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox_name, colors=None):
-    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label). axL may be None."""
+def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox_name, colors=None,
+         ph_below: float = 0.0) -> bool:
+    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label; ph_p optional). axL may
+    be None. A dagger follows a CI whose proportional-hazards p is below ph_below; returns whether one was drawn."""
     colors = colors or {}
+    marked = False
     n = len(cohorts)
     offs = [0.0] if n_ev == 1 else [-0.24, 0.24]
     shades = [S.INK] if n_ev == 1 else [S.INK, S.SECOND]
@@ -100,6 +107,10 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
                         axR.plot([edge], [yy], marker=mk, ms=2.6, color=col, mew=0, zorder=3, clip_on=False)
                 axR.scatter([min(max(r["hr"], xlo), xhi)], [yy], s=15 if n_ev == 1 else 11, marker="D",
                             facecolor=col if r["cox_p"] < alpha else "white", edgecolor=col, lw=0.7, zorder=3)
+                if ph_below > 0 and r.get("ph_p", np.nan) < ph_below:
+                    axR.annotate(PH_MARK, (min(hi, xhi), yy), xytext=(3, 0), textcoords="offset points", fontsize=6.0,
+                                 color=col, ha="left", va="center", annotation_clip=False)
+                    marked = True
             elif r["cox_status"] == "failed":
                 axR.text(1.0, yy, f"{cox_name} fit failed", fontsize=5.2, color=S.MUTED, ha="center", va="center")
     for ax in axes:
@@ -108,3 +119,4 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
         ax.spines["left"].set_visible(False)
         ax.xaxis.grid(True, color=S.GRID, lw=0.4)
         ax.set_axisbelow(True)
+    return marked

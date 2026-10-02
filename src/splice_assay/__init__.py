@@ -11,10 +11,10 @@ from .analysis import Results, analyse
 from .config import Settings
 from .dataset import Dataset, InputError
 from .events import Geometry, geometry
-from .plot import Panel, cox_model_figure, event_panel, model_terms
+from .plot import Panel, cox_model_figure, event_panel, expression_panel, model_terms
 from .stats.survival import CoxModel
 
 analyze = analyse
 
 __all__ = ["CoxModel", "Dataset", "Geometry", "InputError", "Panel", "Results", "Settings", "__version__", "analyse",
-           "analyze", "cox_model_figure", "event_panel", "geometry", "model_terms"]
+           "analyze", "cox_model_figure", "event_panel", "expression_panel", "geometry", "model_terms"]

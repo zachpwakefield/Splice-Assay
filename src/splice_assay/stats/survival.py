@@ -5,8 +5,9 @@ Survival cohort   the cohort's survival samples (one case sample per patient). I
 Coverage gate     PSI observed in >= coverage_frac of the survival samples and >= min_off_modal observed values away
                   from the modal value; otherwise neither test runs ('coverage_gate').
 Endpoint cohort   survival samples whose patient has a valid row for the endpoint and an observed PSI.
-KM                PSI <= cut is the low arm. Needs km_min_group patients per arm and km_min_events events. The
-                  log-rank HR is (O/E high) / (O/E low).
+KM                The cut is the median of the survival samples' values (Settings.km_split: median, mean or a
+                  number; km_split_expression for expression). PSI <= cut is the low arm. Needs km_min_group
+                  patients per arm and km_min_events events. The log-rank HR is (O/E high) / (O/E low).
 Cox               h(t) = h0(t) exp(b * PSI/0.10 + g * z(host expression) + covariates), Efron ties, no penalty
                   (lifelines). Host expression enters when an expression table is given (CoxModel.expression);
                   clinical covariates when named (CoxModel). Patients missing any model variable are left out.
@@ -155,6 +156,18 @@ def _failed(out: dict) -> dict:
 def low_psi_variance(x, s: Settings) -> bool:
     x = np.asarray(x, float)
     return bool(len(x) >= 2 and np.std(x, ddof=1) < s.low_psi_variance_sd)
+
+
+def km_cut(obs: np.ndarray, rule) -> tuple[float, str]:
+    """The KM split of the observed values and how it was chosen: 'median', 'mean', or 'set' (a number given in
+    Settings.km_split). The high arm is above the split."""
+    if not len(obs):
+        return NAN, ""
+    if rule == "median":
+        return float(np.median(obs)), "median"
+    if rule == "mean":
+        return float(np.mean(obs)), "mean"
+    return float(rule), "set"
 
 
 def km_gate(high: np.ndarray, e: np.ndarray, s: Settings) -> bool:
@@ -318,7 +331,7 @@ def _km_ph(r: dict, t, e, high, s: Settings) -> None:
         r["km_notes"] = f"non-proportional hazards between the arms (p {fp(r['km_ph_p'])})"
 
 
-def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None) -> list[str]:
+def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None, quantity: str = "PSI") -> list[str]:
     """Notes on a fitted model, which runs anyway: fewer events per estimated term than cox_events_per_term (an
     overfit risk), and, for PSI, a spread in the fit cohort below narrow_psi_below (the HR covers a few PSI points).
     Sets cox_events_per_term and psi_narrow on the row."""
@@ -329,7 +342,7 @@ def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None) 
     if spread is not None:
         r["psi_narrow"] = bool(s.narrow_psi_below > 0 and spread < s.narrow_psi_below)
         if r["psi_narrow"]:
-            out.append(f"narrow PSI range ({s.narrow_psi_measure.upper()} {spread:.3f} < {s.narrow_psi_below:g})")
+            out.append(f"narrow {quantity} range ({s.narrow_psi_measure.upper()} {spread:.3f} < {s.narrow_psi_below:g})")
     return out
 
 
@@ -352,7 +365,7 @@ def _terms(fit: dict, meta: list, s: Settings) -> tuple[list[dict], list[str]]:
 # ============================================================================================ one cohort
 def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, event: np.ndarray,
                   host_base: np.ndarray | None, s: Settings, model: CoxModel | None = None,
-                  clinical: pd.DataFrame | None = None) -> tuple[dict, list[dict]]:
+                  clinical: pd.DataFrame | None = None, quantity: str = "PSI") -> tuple[dict, list[dict]]:
     """KM and Cox statistics of one event in one cohort for one endpoint, and the Cox terms.
 
     x_base      PSI over the cohort's survival samples (NaN = missing)
@@ -366,10 +379,11 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     use_expr = host_base is not None and model.expression
     cv = coverage(x_base, s.round_decimals)
     obs = x_base[np.isfinite(x_base)]
+    cut, how = km_cut(obs, s.km_split)
     r = dict(n_survival=len(x_base), n_obs=cv["n_obs"], frac_obs=cv["frac_obs"], off_modal=cv["off_modal"],
-             modal_share=cv["modal_share"], cutoff=float(np.median(obs)) if len(obs) else NAN,
+             modal_share=cv["modal_share"], cutoff=cut, km_split=how,
              eligible=bool(cv["frac_obs"] >= s.coverage_frac and cv["off_modal"] >= s.min_off_modal),
-             n_endpoint=len(ep_pos), cox_model=model.describe(use_expr))
+             n_endpoint=len(ep_pos), cox_model=model.describe(use_expr).replace("PSI", quantity, 1))
     if not r["eligible"]:
         return dict(r, km_status="coverage_gate", cox_status="coverage_gate"), []
     keep = np.isfinite(x_base[ep_pos])
@@ -408,12 +422,13 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     if len(used) < len(need):
         m_used = CoxModel(model.expression, tuple(c for c in model.covariates if c in used), model.categorical,
                           tuple(c for c in model.strata if c in used), model.scale, dict(model.baseline))
-        r["cox_model"] = m_used.describe(use_expr)
+        r["cox_model"] = m_used.describe(use_expr).replace("PSI", quantity, 1)
     r["cox_n_dropped"] = int((~ok).sum())
     tt, ee, xx = t[ok], e[ok], x[ok]
     # ---------------------------------------------------------------- Cox: the design
     df, why = pd.DataFrame({"time": tt, "event": ee, "psi10": xx / s.psi_step}), "too_few_patients_or_events"
-    meta = [dict(column="psi10", term="PSI", kind="psi", level="", reference="", unit=f"+{s.psi_step:g} PSI")]
+    unit = "PSI" if quantity == "PSI" else "HIT"           # the value's short name in units ("per IQR (0.04 HIT)")
+    meta = [dict(column="psi10", term=quantity, kind="psi", level="", reference="", unit=f"+{s.psi_step:g} {unit}")]
     if use_expr:
         g = g[ok]
         if len(g) >= 3 and np.std(g) > 0:
@@ -458,12 +473,12 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
                               ci_low=float(np.exp(c - s.ci_z * sei)), ci_high=float(np.exp(c + s.ci_z * sei)), p=p,
                               ph_p=ph.get(m["column"], NAN)))
         if m["kind"] == "psi":
-            terms.append(dict(term="PSI", kind="psi_iqr", level="", reference="",
-                              unit=f"IQR ({r['psi_iqr']:.3g} PSI)", coef=c * k, se=sei * k, hr=r["hr_per_iqr"],
+            terms.append(dict(term=quantity, kind="psi_iqr", level="", reference="",
+                              unit=f"IQR ({r['psi_iqr']:.3g} {unit})", coef=c * k, se=sei * k, hr=r["hr_per_iqr"],
                               ci_low=r["ci_low_iqr"], ci_high=r["ci_high_iqr"], p=p, ph_p=ph.get(m["column"], NAN)))
         elif sei > 3:                                       # a sparse level or a nearly separated covariate
             unstable.append(f"{m['term']}{' ' + m['level'] if m['level'] else ''}")
-    flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_psi_measure == "iqr" else r["psi_sd"])
+    flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_psi_measure == "iqr" else r["psi_sd"], quantity)
     flags += _ph_note(fit, meta, s)
     r["cox_notes"] = "; ".join(x for x in [r.get("cox_notes", "")] + flags
                                + ([f"unstable: {', '.join(unstable)} (se > 3)"] if unstable else []) if x)
@@ -484,8 +499,9 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     obs = g_base[np.isfinite(g_base)]
     describe = " + ".join(["expression"] + list(model.covariates)) + (
         f"; strata: {', '.join(model.strata)}" if model.strata else "")
+    cut, how = km_cut(obs, s.km_split_expression)
     r = dict(n_survival=len(g_base), n_obs=cv["n_obs"], frac_obs=cv["frac_obs"], off_modal=cv["off_modal"],
-             modal_share=cv["modal_share"], cutoff=float(np.median(obs)) if len(obs) else NAN,
+             modal_share=cv["modal_share"], cutoff=cut, km_split=how,
              eligible=bool(cv["frac_obs"] >= s.coverage_frac and cv["off_modal"] >= s.min_off_modal),
              n_endpoint=len(ep_pos), cox_model=describe)
     if not r["eligible"]:

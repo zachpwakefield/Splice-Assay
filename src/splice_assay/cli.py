@@ -12,12 +12,19 @@ import pandas as pd
 
 from . import __version__
 from .config import Settings
-from .dataset import Dataset, InputError, read_table
+from .dataset import EVENT_COLUMNS, Dataset, InputError, read_table
 from .stats.survival import CoxModel
 
 
 def _settings(args) -> Settings:
     s = Settings.from_json(args.settings) if getattr(args, "settings", None) else Settings()
+    try:
+        if getattr(args, "km_split", None):
+            s = s.replace(km_split=args.km_split)
+        if getattr(args, "km_split_expression", None):
+            s = s.replace(km_split_expression=args.km_split_expression)
+    except ValueError as e:
+        raise InputError(str(e)) from None
     if getattr(args, "case_label", None) or getattr(args, "reference_label", None):
         s = s.replace(case_label=args.case_label or s.case_label, reference_label=args.reference_label or
                       s.reference_label)
@@ -56,15 +63,18 @@ def _detail(args, model: CoxModel):
 
 
 def _with_gene_events(args, events) -> list[str]:
-    """The events plus every other event of their genes: q values are computed within each gene."""
+    """The events plus the other events of their genes in the same q families: q values are computed within each
+    gene, and HIT-index events form families of their own (so a PSI page never analyses them, nor a HIT page PSI)."""
     from .dataset import events_table
+    from .events import quantity
     tables = _pairs(args.table, "--table")
     ev = events_table(tables.get("events") or tables.get("psi") or args.data, _pairs(args.column, "--column") or None)
     miss = [e for e in events if e not in ev.index]
     if miss:
         raise InputError(f"event(s) not in the events table: {', '.join(miss[:5])}")
-    genes = set(ev.loc[list(events), "gene"])
-    return list(dict.fromkeys(list(events) + list(ev.index[ev.gene.isin(genes)])))
+    kind = ev.get("event_type", pd.Series("", index=ev.index)).map(quantity)
+    fam = {(ev.at[e, "gene"], kind[e]) for e in events}
+    return list(dict.fromkeys(list(events) + [e for e, g, k in zip(ev.index, ev.gene, kind) if (g, k) in fam]))
 
 
 def _top(v) -> int:
@@ -99,6 +109,11 @@ def cmd_validate(args) -> int:
     missing_geo = ds.events[(ds.events.event_type == "") | (ds.events.variable == "")]
     if len(missing_geo):
         print(f"note: {len(missing_geo)} event(s) have no geometry; they can be analysed but not drawn")
+    from .events import opt_in
+    n_hit = int(ds.events.event_type.map(opt_in).sum())
+    if n_hit:
+        print(f"note: {n_hit} HIT-index event(s); analyse and probe leave them out unless --include-hit (a HIT event "
+              "named with --event is always analysed)")
     print("ok")
     return 0
 
@@ -107,7 +122,7 @@ def cmd_analyse(args) -> int:
     from .analysis import analyse
     ds = _dataset(args, args.event or None)
     res = analyse(ds, events=args.event or None, cohorts=args.cohort or None, endpoints=args.endpoint or None,
-                  settings=_settings(args), model=_model(args))
+                  settings=_settings(args), model=_model(args), include_hit=args.include_hit)
     for k, p in res.write(args.out).items():
         print(f"{k}: {p}")
     return 0
@@ -130,6 +145,7 @@ def cmd_panel(args) -> int:
     from .analysis import analyse
     from .clinical import auto_clinical
     from .plot import event_panel
+    from .plot import expression_panel
     from .plot.panel_common import page_parts
     from .probe import combine, default_endpoint, pick_cohorts
     ids = _with_gene_events(args, args.event)                # q values are within the gene: analyse all its events
@@ -158,14 +174,23 @@ def cmd_panel(args) -> int:
         p = event_panel(ds, args.event, chunk, ep, settings=s, model=model, gtf=gtf, highlight=args.highlight,
                         highlight_title=args.highlight_title, out_dir=args.out,
                         stem=f"{args.stem}_p{i}" if args.stem and part else args.stem, detail=detail,
-                        layout=args.layout, results=results, proteins=_proteins(args), gex=not args.no_gex,
-                        detail_results=adj, part=part)
+                        layout=args.layout, results=results, proteins=_proteins(args), detail_results=adj, part=part)
         if i == 1:
             status = p.provenance["call"].get("protein_status") or {}
             for e, st in status.items():
                 print(f"protein {e}: " + (st if st not in ("pair", "inclusion_only", "exclusion_only") else "drawn"))
         for k, v in p.paths.items():
             print(f"{k}: {v}")
+    if not args.no_gex:                                     # the host gene's expression, on its own page
+        gene = ds.events.at[args.event[0], "expression_gene"]
+        xm = detail if isinstance(detail, CoxModel) else model
+        for i, chunk in enumerate(parts, 1):
+            part = (i, len(parts)) if len(parts) > 1 else None
+            stem = (f"{args.stem}_expression" + (f"_p{i}" if part else "")) if args.stem else None
+            x = expression_panel(ds, gene, chunk, ep, settings=s, model=xm, out_dir=args.out, stem=stem, part=part)
+            if x is None:
+                break
+            print(f"expression: {x.paths.get('png', x.stem)}")
     return 0
 
 
@@ -204,7 +229,8 @@ def cmd_probe(args) -> int:
         res = probe(ds, genes=args.gene, events=args.event, cohorts=args.cohort, endpoint=ep_arg, settings=s,
                     model=base, adjusted=adjusted, baseline=_pairs(args.baseline, "--baseline") or None,
                     gtf=_gtf(args), out_dir=out, top=args.top, max_pages=args.max_pages, proteins=_proteins(args),
-                    gex=not args.no_gex, call="splice-assay " + " ".join(shlex.quote(a) for a in args._argv))
+                    gex=not args.no_gex, include_hit=args.include_hit,
+                    call="splice-assay " + " ".join(shlex.quote(a) for a in args._argv))
         for k, v in res.paths.items():
             print(f"{k}: {v}")
         top = res.events[res.events.measurable].head(5) if len(res.events) else res.events
@@ -252,8 +278,22 @@ def cmd_panels(args) -> int:
         p = event_panel(ds, _split(r.events), _split(r.cohorts), str(r.endpoint).strip(), settings=s, gtf=gtf,
                         highlight=args.highlight, highlight_title=args.highlight_title, out_dir=args.out,
                         stem=None if stem is None or pd.isna(stem) else str(stem), results=res,
-                        detail=_detail(args, model), layout=args.layout, proteins=cache, gex=not args.no_gex)
+                        detail=_detail(args, model), layout=args.layout, proteins=cache)
         print(p.paths.get("png", p.stem))
+    if not args.no_gex:                                     # one expression page per gene and endpoint
+        from .plot import expression_panel
+        detail = _detail(args, model)
+        xm = detail if isinstance(detail, CoxModel) else model
+        todo = {}
+        for r in spec.itertuples():
+            for e in _split(r.events):
+                key = (ds.events.at[e, "expression_gene"], str(r.endpoint).strip())
+                todo.setdefault(key, [])
+                todo[key] += [c for c in _split(r.cohorts) if c not in todo[key]]
+        for (gene, ep), coh in todo.items():
+            x = expression_panel(ds, gene, coh, ep, settings=s, model=xm, out_dir=args.out)
+            if x is not None:
+                print(x.paths.get("png", x.stem))
     return 0
 
 
@@ -324,20 +364,24 @@ def cmd_cox(args) -> int:
 def cmd_example(args) -> int:
     from . import example
     from .analysis import analyse
-    from .plot import cox_model_figure, event_panel
+    from .plot import cox_model_figure, event_panel, expression_panel
     out = Path(args.out)
     paths = example.write(out)
     ds = Dataset.from_dir(out / "data")
     res = analyse(ds)
     res.write(out / "results")
     clinical = CoxModel().with_clinical(("age", "sex", "stage"), baseline={"stage": "I", "sex": "female"})
-    figs = [event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", gtf=paths["gtf"], out_dir=out / "figures",
+    figs = [expression_panel(ds, "SYN1", ["COH1", "COH2"], "OS", model=clinical, out_dir=out / "figures"),
+            event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", gtf=paths["gtf"], out_dir=out / "figures",
                         results=res, detail=clinical, proteins=paths["proteins"]),
             event_panel(ds, ["SYN1:SE:1", "SYN1:RI:1"], ["COH1"], "DSS", gtf=paths["gtf"], out_dir=out / "figures",
                         results=res),
             event_panel(ds, "SYN2:MXE:1", ["COH3"], "OS", gtf=paths["gtf"], out_dir=out / "figures", results=res),
+            # res leaves out the HIT index (as analyse does by default), so this page analyses SYN3's HIT events
+            event_panel(ds, "SYN3:HIT:0002", ["COH1"], "OS", gtf=paths["gtf"], out_dir=out / "figures"),
             cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=clinical, out_dir=out / "figures")]
     print(f"data:     {out / 'data'}")
+    print(f"hitindex: {paths['hitindex']} (HITindex matrices of SYN3, for import-hitindex)")
     print(f"proteins: {paths['proteins']} (a synthetic protein cache)")
     print(f"results:  {out / 'results'}")
     for f in figs:
@@ -352,22 +396,72 @@ def cmd_import_rmats(args) -> int:
     types = [t.strip().upper() for t in args.types.split(",")] if args.types else ["SE", "RI", "A3SS", "A5SS", "MXE"]
     events, psi = import_rmats(args.rmats_dir, args.b1, args.b2, counting=args.counting, event_types=types,
                                prefix=args.prefix, names1=names1, names2=names2, mxe_psi_exon=args.mxe_psi_exon)
-    out = Path(args.out)
+    _write_event_tables(Path(args.out), events, psi, args.one_table, args.append)
+    return 0
+
+
+def cmd_import_hitindex(args) -> int:
+    from .hitindex import import_hitindex
+    gtf = _gtf(args)
+    if not gtf:
+        raise InputError("import-hitindex needs --gtf (or $SPLICE_ASSAY_GTF): HITindex IDs carry no strand")
+    events, psi = import_hitindex(args.matrices, gtf, genes=args.gene, prefix=args.prefix)
+    n = events.event_type.value_counts().to_dict()
+    print("imported: " + ", ".join(f"{n[k]} {k}" for k in ("AFE", "ALE", "HIT") if k in n))
+    _write_event_tables(Path(args.out), events, psi, args.one_table, args.append)
+    return 0
+
+
+def _write_event_tables(out: Path, events: pd.DataFrame, psi: pd.DataFrame, one_table: bool, append: bool) -> None:
+    """Write events and PSI as events.csv + psi.csv (long), or one psi.csv with the event columns. With `append`,
+    add them to the tables already in `out` (e.g. HITindex events beside rMATS ones), in the layout found there:
+    events.csv beside a long or wide psi.csv, or the event columns inside psi.csv (wide or long). The rows already
+    there are rewritten exactly as read."""
+    from .dataset import find_tables
     out.mkdir(parents=True, exist_ok=True)
-    if args.one_table:                                  # the event columns, then one PSI column per sample
+    ev_f, psi_f = out / "events.csv", out / "psi.csv"
+    found = find_tables(out)
+    if append and found.get("psi") is not None:
+        other = [found[t].name for t in ("psi", "events") if t in found and found[t].name != f"{t}.csv"]
+        if other:
+            raise InputError(f"--append adds to CSV tables; {out} has {', '.join(other)}")
+        old = pd.read_csv(psi_f, dtype=str, keep_default_na=False, low_memory=False)      # kept exactly as written
+        in_psi = "events" not in found                              # the event columns are inside psi.csv
+        old_events = (old[[c for c in old.columns if c in EVENT_COLUMNS]] if in_psi
+                      else pd.read_csv(ev_f, dtype=str, keep_default_na=False, low_memory=False))
+        clash = sorted(set(old_events.get("event_id", [])) & set(events.event_id))
+        if clash:
+            raise InputError(f"--append: event(s) already in {out}: {', '.join(clash[:5])}")
+        if "sample_id" in old.columns:                              # long: one row per event and sample
+            add = psi.merge(events, on="event_id", how="left") if in_psi else psi
+        else:                                                       # wide: one column per sample
+            add = psi.pivot(index="event_id", columns="sample_id", values="psi")
+            add = add.reindex(index=events.event_id, columns=list(dict.fromkeys(psi.sample_id))).reset_index()
+            if in_psi:
+                add = events.merge(add, on="event_id")
+        table = pd.concat([old, add], ignore_index=True)
+        table.to_csv(psi_f, index=False, lineterminator="\n")
+        if not in_psi:
+            ev_all = pd.concat([old_events, events], ignore_index=True)
+            ev_all.to_csv(ev_f, index=False, lineterminator="\n")
+            print(f"events: {ev_f} ({len(ev_all)}, {len(events)} added)")
+        print(f"psi:    {psi_f} ({len(events)} events added to the "
+              + ("long" if "sample_id" in old.columns else "wide") + " table)")
+        return
+    if one_table:                                       # the event columns, then one PSI column per sample
         wide = psi.pivot(index="event_id", columns="sample_id", values="psi")
         wide = wide.reindex(index=events.event_id, columns=list(dict.fromkeys(psi.sample_id))).reset_index()
-        events.merge(wide, on="event_id").to_csv(out / "psi.csv", index=False, lineterminator="\n")
-        print(f"psi:    {out / 'psi.csv'} ({len(events)} events with their event columns, "
-              f"{psi.sample_id.nunique()} samples)")
+        table = events.merge(wide, on="event_id")
+        table.to_csv(psi_f, index=False, lineterminator="\n")
+        print(f"psi:    {psi_f} ({len(table)} events with their event columns)")
     else:
-        events.to_csv(out / "events.csv", index=False, lineterminator="\n")
-        psi.to_csv(out / "psi.csv", index=False, lineterminator="\n")
-        print(f"events: {out / 'events.csv'} ({len(events)})")
-        print(f"psi:    {out / 'psi.csv'} ({psi.sample_id.nunique()} samples)")
-    print("next: add samples.csv (sample_id, patient_id, cohort, group; survival and clinical columns may go in it "
-          "too) to the same folder")
-    return 0
+        events.to_csv(ev_f, index=False, lineterminator="\n")
+        psi.to_csv(psi_f, index=False, lineterminator="\n")
+        print(f"events: {ev_f} ({len(events)})")
+        print(f"psi:    {psi_f} ({psi.sample_id.nunique()} samples)")
+    if "samples" not in found:
+        print("next: add samples.csv (sample_id, patient_id, cohort, group; survival and clinical columns may go in it "
+              "too) to the same folder")
 
 
 def cmd_gtf_subset(args) -> int:
@@ -407,6 +501,10 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--na-value", action="append", metavar="CODE",
                         help='a code to read as missing in every table, e.g. missing or "[Not Available]"')
         sp.add_argument("--settings", help="JSON file of setting overrides")
+        sp.add_argument("--km-split", metavar="median|mean|VALUE",
+                        help="KM split of the event values, PSI or HIT index (default median; Settings km_split)")
+        sp.add_argument("--km-split-expression", metavar="median|mean|VALUE",
+                        help="KM split of host-gene expression (default median; Settings km_split_expression)")
         sp.add_argument("--keep", metavar="FILE",
                         help="only the patients listed in this table (all their samples, e.g. one subtype); IDs may be "
                              "patient or sample IDs, or barcodes that start with them")
@@ -434,6 +532,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help="with models: side = band below; stacked = one row per cohort with its model, forest "
                              "below (auto: stacked from three cohorts)")
 
+    def hit_arg(sp):
+        sp.add_argument("--include-hit", action="store_true",
+                        help="also analyse HIT-index events (left out by default: the HIT index covers every exon, a "
+                             "far larger set; a HIT event named with --event is always analysed)")
+
     sp = sub.add_parser("validate", help="check the input tables and print per-cohort counts")
     data_args(sp)
     sp.add_argument("--event", action="append", help="check only these events")
@@ -446,11 +549,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--event", action="append")
     sp.add_argument("--cohort", action="append")
     sp.add_argument("--endpoint", action="append")
+    hit_arg(sp)
     sp.set_defaults(func=cmd_analyse)
 
     def gex_args(sp):
         sp.add_argument("--no-gex", action="store_true",
-                        help="no host-gene expression rows (default: shown when an expression table is given)")
+                        help="no host-gene expression page (default: one per gene when an expression table is given)")
 
     def protein_args(sp):
         sp.add_argument("--proteins", metavar="DIR",
@@ -494,6 +598,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top", type=_top, default=3,
                     help="cohorts shown per page: a number or 'all' (default 3; the forest always shows every cohort)")
     sp.add_argument("--max-pages", type=int, default=30, help="pages for the best-ranked events (default 30)")
+    hit_arg(sp)
     sp.add_argument("--no-adjust", action="store_true", help="no adjusted model (default: age + sex + stage found)")
     sp.add_argument("--out", help="output folder (default probe_<gene>_<endpoint>)")
     protein_args(sp)
@@ -550,10 +655,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--types", help="comma-separated event types (default SE,RI,A3SS,A5SS,MXE)")
     sp.add_argument("--prefix", default="", help="prefix for event IDs")
     sp.add_argument("--mxe-psi-exon", default="transcript_upstream", choices=["transcript_upstream", "first_listed"])
+    sp.add_argument("--append", action="store_true", help="add to the events and psi tables already in --out")
     sp.add_argument("--one-table", action="store_true",
                     help="write one psi.csv holding the event columns and one PSI column per sample (no events.csv)")
     sp.add_argument("--out", required=True)
     sp.set_defaults(func=cmd_import_rmats)
+
+    sp = sub.add_parser("import-hitindex", help="events and values from HITindex matrices (AFE, ALE, HIT index)")
+    sp.add_argument("matrices", nargs="+", help="afe/ale/hit matrices: rows '<gene_id>;<chrom>:<start>-<end>;<kind>' "
+                                               "(1-based), one column per sample (CSV or TSV, .gz allowed)")
+    sp.add_argument("--gtf", help="GTF giving each gene's strand and symbol (default: $SPLICE_ASSAY_GTF)")
+    sp.add_argument("--gene", action="append", help="import only this gene (symbol or Ensembl ID; repeat for more)")
+    sp.add_argument("--prefix", default="", help="prefix for event IDs")
+    sp.add_argument("--one-table", action="store_true",
+                    help="write one psi.csv holding the event columns and one value column per sample")
+    sp.add_argument("--append", action="store_true",
+                    help="add to the events and psi tables already in --out (e.g. beside imported rMATS events)")
+    sp.add_argument("--out", required=True)
+    sp.set_defaults(func=cmd_import_hitindex)
 
     sp = sub.add_parser("gtf-subset", help="a small GTF with the records around the events")
     sp.add_argument("gtf")

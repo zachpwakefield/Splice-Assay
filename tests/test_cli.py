@@ -9,13 +9,20 @@ def test_example_then_commands(tmp_path, capsys):
     out = tmp_path / "ex"
     assert main(["example", str(out)]) == 0
     data = out / "data"
-    assert (out / "results" / "survival.csv").exists() and len(list((out / "figures").glob("*.png"))) == 4
+    assert (out / "results" / "survival.csv").exists() and len(list((out / "figures").glob("*.png"))) == 6
     assert main(["validate", str(data)]) == 0
     assert "COH1" in capsys.readouterr().out
     assert main(["analyse", str(data), "--out", str(tmp_path / "res"), "--event", "SYN1:SE:1",
                  "--endpoint", "OS"]) == 0
     sv = pd.read_csv(tmp_path / "res" / "survival.csv")
     assert set(sv.endpoint) == {"OS"} and set(sv.event_id) == {"SYN1:SE:1"}
+    assert set(sv.km_split) == {"median"}
+    assert main(["analyse", str(data), "--out", str(tmp_path / "res7"), "--event", "SYN1:SE:1", "--endpoint", "OS",
+                 "--km-split", "0.7"]) == 0
+    sv = pd.read_csv(tmp_path / "res7" / "survival.csv")
+    assert set(sv.cutoff) == {0.7} and set(sv.km_split) == {"set"}
+    assert main(["analyse", str(data), "--out", str(tmp_path / "x"), "--km-split-expression", "max"]) == 2
+    assert 'km_split_expression must be "median", "mean" or a number' in capsys.readouterr().err
     (tmp_path / "s.json").write_text(json.dumps({"formats": ["svg"], "dpi": 100}))
     assert main(["panel", str(data), "--event", "SYN1:RI:1", "--cohort", "COH1", "--endpoint", "OS",
                  "--gtf", str(data / "annotation.gtf"), "--out", str(tmp_path / "fig"),

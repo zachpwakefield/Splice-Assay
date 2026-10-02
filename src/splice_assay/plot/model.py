@@ -44,7 +44,8 @@ def display_rows(terms: pd.DataFrame) -> list[dict]:
         if r.kind == "psi":
             continue                                     # PSI is shown per IQR (its per +0.10 row is in the CSV)
         if r.kind == "psi_iqr":
-            out.append(dict(label=f"PSI (per IQR, {r.unit[5:-1]})", short="PSI (per IQR)", indent=False, r=r))
+            out.append(dict(label=f"{r.term} (per IQR, {r.unit[5:-1]})", short=f"{r.term} (per IQR)", indent=False,
+                            r=r))
         elif r.kind == "expression":
             out.append(dict(label="Host expression (per SD)", short="Host expr. (per SD)", indent=False, r=r))
         elif r.kind == "gex":                            # the main term of an expression model
@@ -110,7 +111,8 @@ def terms_columns(width: float, disp_lists: list[list[dict]], fs: float) -> dict
 
 
 def draw_terms(fig, W: float, H: float, top: float, x0: float, width: float, disp: list[dict], alpha: float,
-               pitch: float = 0.19, fs: float = 6.4, tag: str = "", xlim=None, cols: dict | None = None) -> list[dict]:
+               pitch: float = 0.19, fs: float = 6.4, tag: str = "", xlim=None, cols: dict | None = None,
+               ph_below: float = 0.0) -> list[dict]:
     """Draw a model forest into `fig`: term labels from x0, the CI plot, then 'HR (95% CI)' and p, within `width`
     inches; the column heads sit just above `top` (inches from the figure top). `xlim` shares an HR axis between
     several forests. Returns the plotted rows."""
@@ -158,9 +160,12 @@ def draw_terms(fig, W: float, H: float, top: float, x0: float, width: float, dis
                    facecolor=S.INK if r.p < alpha else "white", edgecolor=S.INK, lw=0.7, zorder=3)
         fig.text(fx(hx), yy, f"{r.hr:.2f} ({r.ci_low:.2f}–{r.ci_high:.2f})", fontsize=fs - 0.2, ha="left",
                  va="center")
-        fig.text(fx(pr), yy, S.fp(r.p), fontsize=fs - 0.2, ha="right", va="center")
+        ph = float(getattr(r, "ph_p", np.nan))
+        bad = ph_below > 0 and ph < ph_below                 # the term's hazards are not proportional
+        fig.text(fx(pr), yy, S.fp(r.p) + (" †" if bad else ""), fontsize=fs - 0.2, ha="right", va="center")
         rows.append(dict(tag=tag, label=d["label"], term=r.term, kind=r.kind, level=r.level, reference=r.reference,
-                         unit=r.unit, coef=r.coef, se=r.se, hr=r.hr, ci_low=r.ci_low, ci_high=r.ci_high, p=r.p))
+                         unit=r.unit, coef=r.coef, se=r.se, hr=r.hr, ci_low=r.ci_low, ci_high=r.ci_high, p=r.p,
+                         ph_p=ph, ph_marked=bad))
     return rows
 
 
@@ -190,7 +195,7 @@ def cox_model_figure(ds: Dataset, event: str, cohort: str, endpoint: str, *, mod
         fig.text(fx(0.12), fy(0.33), f"Cox: {model.describe(use_expr)} · {int(row.cox_n)} patients, "
                  f"{int(row.cox_events)} events · {ENDPOINT_NAMES.get(endpoint, endpoint).lower()}",
                  fontsize=6.2, color=S.INK2, ha="left", va="top")
-        rows = draw_terms(fig, W, H, top, 0.12, 5.33, disp, s.alpha, pitch)
+        rows = draw_terms(fig, W, H, top, 0.12, 5.33, disp, s.alpha, pitch, ph_below=s.ph_note_below)
         fig.text(fx(0.12), fy(H - 0.08), MODEL_NOTE.format(alpha=s.alpha), fontsize=5.6, color=S.MUTED, ha="left",
                  va="bottom")
     table = pd.concat([pd.DataFrame(rows).assign(panel="term"), terms.assign(panel="cox_terms_all")],

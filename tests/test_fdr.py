@@ -33,8 +33,23 @@ def test_analyse_gives_q_within_each_gene(ds):
         for _, d in table[table[f"{test}_status"].eq("tested")].groupby(by):
             if len(d) >= 2:
                 assert np.allclose(d[f"{test}_q"], false_discovery_control(d[f"{test}_p"].to_numpy(), method="bh"))
-    # the default family minimum (10) leaves the synthetic genes' small families without q
-    assert sa.analyse(ds, endpoints=["OS"]).groups.paired_q.isna().all()
+    # the default family minimum (10) leaves the synthetic genes' small families without q (SYN3's HIT-index events,
+    # which would form a family of their own, are left out by default)
+    g = sa.analyse(ds, endpoints=["OS"]).groups
+    assert g.paired_q.isna().all() and not g.event_id.str.contains(":HIT:").any()
+
+
+def test_hit_index_forms_its_own_families(ds):
+    """Including the HIT index changes no PSI q value: HIT-index tests are families of their own."""
+    s = sa.Settings(fdr_min_family=2)
+    a = sa.analyse(ds, endpoints=["OS"], settings=s)
+    b = sa.analyse(ds, endpoints=["OS"], settings=s, include_hit=True)
+    for x, y in ((a.groups, b.groups), (a.survival, b.survival)):
+        hit = y.event_id.str.contains(":HIT:")
+        assert hit.any() and not x.event_id.str.contains(":HIT:").any()
+        pd.testing.assert_frame_equal(x.reset_index(drop=True), y[~hit].reset_index(drop=True), check_dtype=False)
+    h = b.groups[b.groups.event_id.str.contains(":HIT:") & b.groups.paired_status.eq("tested")]
+    assert set(h.paired_q_tests) == {len(h)} and h.paired_q.notna().all()
 
 
 def test_panel_prints_q(ds):

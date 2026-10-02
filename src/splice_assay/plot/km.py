@@ -1,4 +1,5 @@
-"""Kaplan-Meier panel: the median split, 95% log-log bands, censoring ticks and an at-risk table."""
+"""Kaplan-Meier panel: the high/low split (median, mean or a set value), 95% log-log bands, censoring ticks and an
+at-risk table."""
 from __future__ import annotations
 
 import numpy as np
@@ -18,6 +19,16 @@ def _curve(t, e, z):
 
 
 SHORT = {"expression": "expr."}
+PH_MARK = "†"                               # marks a proportional-hazards test below Settings.ph_note_below
+
+
+def split_text(row, what: str) -> str:
+    """'split at median PSI 0.7705' (or mean), or 'split at PSI 0.5 (set)' for a split given in the settings."""
+    how = row.get("km_split") or "median"
+    how = how if isinstance(how, str) else "median"
+    if how == "set":
+        return f"split at {what} {S.fcut(row['cutoff'])} (set)"
+    return f"split at {how} {what} {S.fcut(row['cutoff'])}"
 
 
 def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag: str, settings, what: str = "PSI"):
@@ -64,12 +75,13 @@ def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag:
     ph = row.get("km_ph_p", np.nan)
     ph = np.nan if ph is None else float(ph)
     ph_line = s.ph_note_below > 0 and np.isfinite(ph) and ph < s.ph_note_below
-    ax.text(0.0, 1.03, f"HR {row['logrank_hr']:.2f} (high vs low) · log-rank p {S.fp(row['km_p'])}\n"
+    ax.text(0.0, 1.03, split_text(row, what) + "\n"
+            f"HR {row['logrank_hr']:.2f} (high vs low) · log-rank p {S.fp(row['km_p'])}" + (f" {PH_MARK}" if ph_line
+                                                                                         else "") + "\n"
             + (f"q {S.fp(q)}\n" if np.isfinite(q) else "") +
-            f"events {int(row['events_high'])} high, {int(row['events_low'])} low\n"
-            f"split at {what} {S.fcut(row['cutoff'])}"
-            + (f"\nnon-proportional hazards (p {S.fp(ph)})" if ph_line else ""), transform=ax.transAxes, fontsize=6.0,
-            va="bottom", ha="left", color=S.INK2, linespacing=1.2)
+            f"events {int(row['events_high'])} high, {int(row['events_low'])} low"
+            + (f"\n{PH_MARK} non-proportional hazards (p {S.fp(ph)})" if ph_line else ""), transform=ax.transAxes,
+            fontsize=6.0, va="bottom", ha="left", color=S.INK2, linespacing=1.2)
     # at-risk table under the axis
     pos = ax.get_position()
     W, H = fig.get_figwidth(), fig.get_figheight()

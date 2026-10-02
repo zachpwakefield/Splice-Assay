@@ -8,14 +8,14 @@ stage, found in the clinical table; see clinical.py). Then:
                     gene, per kind of test)
     events.csv      one row per event, ranked (see RANKING)
     overview.png    events x cohorts: adjusted HR per IQR (colour), adjusted p < 0.05 (dot), group hit (frame)
-    pages/          one assay page per ranked event: the event, its most promising cohorts, their models, the forest
-    probe.pdf       the overview, then every page, in rank order
+    pages/          one assay page per ranked event (the event, its most promising cohorts, their models, the
+                    forest); with an expression table, also the host gene's expression page (<GENE>_expression)
+    probe.pdf       the overview, every event page in rank order, then the expression page
     report.md       what was run, the ranking, how to read it, and how to reproduce it
     proteins.csv    with a protein cache: the suggested protein change of every event (see protein.py), also
                     summarised in events.csv and drawn on the pages
     expression_cells.csv   with an expression table: the host gene's own statistics per cohort (case vs reference,
-                    KM on its median split, Cox on expression + the adjusted model's clinical terms); also drawn as
-                    expression rows on the pages
+                    KM split, Cox on expression + the adjusted model's clinical terms), as on its expression page
 
 Everything is nominal: a probe ranks candidates, it does not test a hypothesis. The report states how many
 p < 0.05 results chance alone would give.
@@ -34,6 +34,7 @@ from .analysis import Results, analyse
 from .clinical import auto_clinical
 from .config import Settings
 from .dataset import Dataset, InputError
+from .events import opt_in, quantity
 from .stats.survival import CoxModel
 
 ALL = 10_000                     # `top` meaning every cohort with a test
@@ -53,7 +54,9 @@ class ProbeResult:
     pages: list = field(default_factory=list)
 
 
-def select_events(ds: Dataset, genes=None, events=None) -> list[str]:
+def select_events(ds: Dataset, genes=None, events=None, include_hit: bool = False) -> list[str]:
+    """The events to probe: those named; else every event of `genes`, else every event. HIT-index events are left
+    out of the last two unless include_hit (a named HIT event is probed)."""
     if events:
         miss = [e for e in events if e not in ds.psi.index]
         if miss:
@@ -62,11 +65,17 @@ def select_events(ds: Dataset, genes=None, events=None) -> list[str]:
     if genes:
         want = {str(g).lower() for g in genes}
         ev = ds.events
-        hit = ev.index[ev.gene.str.lower().isin(want) | ev.gene_id.str.lower().isin(want)]
-        if not len(hit):
+        found = ev.index[ev.gene.str.lower().isin(want) | ev.gene_id.str.lower().isin(want)]
+        if not len(found):
             raise InputError(f"no event of gene(s) {', '.join(genes)} in the data")
-        return [e for e in ds.psi.index if e in set(hit)]
-    return list(ds.psi.index)
+        ids = [e for e in ds.psi.index if e in set(found)]
+    else:
+        ids = list(ds.psi.index)
+    out = [e for e in ids if include_hit or not opt_in(ds.events.at[e, "event_type"])]
+    if ids and not out:
+        raise InputError("only HIT-index events " + (f"for {', '.join(map(str, genes))}" if genes else "in the data")
+                         + ": add --include-hit (include_hit=True) to probe them")
+    return out
 
 
 def default_endpoint(ds: Dataset, endpoint=None) -> str:
@@ -204,7 +213,8 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
             sp.set_visible(False)
         ax.xaxis.tick_top()
         fig.text(0.12 / W, 1 - 0.1 / H, f"Probe overview · {endpoint}", fontsize=8.5, fontweight="bold", va="top")
-        fig.text(0.12 / W, 1 - 0.3 / H, "colour: HR per IQR of PSI (adjusted model where fitted); dot: p < "
+        fig.text(0.12 / W, 1 - 0.3 / H, f"colour: HR per IQR of {_value_name(ev.event_type)} (adjusted model "
+                 "where fitted); dot: p < "
                  f"{s.alpha:g} (large: < 0.01); frame: group hit; grey: not tested", fontsize=5.8, color=S.INK2,
                  va="top")
         cax = fig.add_axes([label_w / W, 0.25 / H, min(1.6, nc * cell_w) / W, 0.08 / H])
@@ -226,22 +236,25 @@ def gene_events(events_table: pd.DataFrame, genes) -> list[str]:
 
 def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, settings: Settings | None = None,
           model: CoxModel | None = None, adjusted="auto", baseline: dict | None = None, gtf=None, out_dir=None,
-          top: int = 3, max_pages: int = 30, log=print, call: str = "", proteins=None, gex: bool = True) -> ProbeResult:
+          top: int = 3, max_pages: int = 30, log=print, call: str = "", proteins=None, gex: bool = True,
+          include_hit: bool = False) -> ProbeResult:
     """Probe events (all of `genes`, the `events` given, or every event) in `cohorts` (default all) for one endpoint
     (default OS). `adjusted`: "auto" (age, sex and stage found in the clinical table), a CoxModel, or None.
     `proteins`: a protein cache (protein.ProteinCache or its folder) for the suggested protein changes. `gex`: the
-    host gene's own expression statistics (expression_cells.csv, and rows on the pages) when expression is given."""
+    host gene's own expression statistics (expression_cells.csv, and its own page) when expression is given.
+    `include_hit`: also probe HIT-index events (left out by default: one per exon, a far larger set)."""
     from matplotlib.backends.backend_pdf import PdfPages
 
     from .annotation import read_gtf
     from .events import geometry
-    from .plot import event_panel
+    from .plot import event_panel, expression_panel
     from .plot import style as S
     from .plot.panel_common import page_parts, safe_name
 
     s = settings or Settings()
     ep = default_endpoint(ds, endpoint)
-    ev = select_events(ds, genes, events)
+    ev = select_events(ds, genes, events, include_hit)
+    hit_left = 0 if events or include_hit else len(select_events(ds, genes, None, True)) - len(ev)
     cohorts = None if not cohorts or [str(c).lower() for c in cohorts] == ["all"] else list(cohorts)
     found = {}
     if adjusted == "auto":
@@ -253,6 +266,8 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
     base_model = model or CoxModel()
     if s.changed():
         log(f"settings changed from the defaults: {s.changed_text()}")
+    if hit_left:
+        log(f"{hit_left} HIT-index event(s) left out (--include-hit adds them)")
     log(f"probe: {len(ev)} event(s) x {len(cohorts or ds.cohorts)} cohort(s), {ep}; base Cox "
         f"{base_model.describe(ds.expression is not None)}"
         + (f"; adjusted {adj_model.describe(ds.expression is not None)}" if adj_model else "; no adjusted model"))
@@ -298,7 +313,15 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
             wins.append((row.chrom, lo - s.gtf_flank, hi + s.gtf_flank))
             genes_ |= {g for g in (row.gene, row.gene_id) if g}
         gtf_table = read_gtf(gtf, wins, genes=sorted(genes_))
-    pages, page_col = [], {}
+    pages, page_col, expr_pages = [], {}, []
+    focus_of = {}                                       # the cohorts each event's page shows
+    for r in todo.itertuples():
+        if r.event_id not in drawable:
+            continue
+        focus = [c for c in (cohorts or []) if c in set(cells.cohort)][:top] if cohorts and len(cohorts) <= top \
+            else pick_cohorts(cells, r.event_id, top)
+        if focus:
+            focus_of[r.event_id] = focus
     import matplotlib
     with matplotlib.rc_context(S.rc()), PdfPages(out_dir / "probe.pdf", metadata={"CreationDate": None,
                                                                                   "ModDate": None}) as pdf:
@@ -306,10 +329,7 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
         S.save(fig, out_dir, "overview", s.formats, s.dpi)
         fig.savefig(pdf, format="pdf")
         for r in todo.itertuples():
-            if r.event_id not in drawable:
-                continue
-            focus = [c for c in (cohorts or []) if c in set(cells.cohort)][:top] if cohorts and len(cohorts) <= top \
-                else pick_cohorts(cells, r.event_id, top)
+            focus = focus_of.get(r.event_id)
             if not focus:
                 continue
             parts = page_parts(focus, s.cohorts_per_page)  # many cohorts: several pages, each with the full forest
@@ -318,19 +338,37 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
                 p = event_panel(ds, r.event_id, chunk, ep, settings=s, model=base_model, gtf=gtf_table,
                                 results=_slice(base, r.event_id), detail=adj_model, out_dir=out_dir / "pages",
                                 stem=stem, proteins={r.event_id: pchanges[r.event_id]} if r.event_id in pchanges
-                                else None, gex=gex, detail_results=_slice(adj, r.event_id) if adj is not None else None,
+                                else None, detail_results=_slice(adj, r.event_id) if adj is not None else None,
                                 part=(i, len(parts)) if len(parts) > 1 else None)
                 p.figure.savefig(pdf, format="pdf")
                 pages.append((r.event_id, stem, chunk))
                 page_col.setdefault(r.event_id, f"pages/{stem}.png")
                 log(f"  page {len(pages)}: {r.event_id} ({', '.join(chunk)})")
+        if gex and ds.expression is not None:           # each gene's expression last, once, on its own page
+            for gene in dict.fromkeys(ds.events.at[e, "expression_gene"] for e in focus_of):
+                coh = list(dict.fromkeys(c for e, f in focus_of.items()
+                                         if ds.events.at[e, "expression_gene"] == gene for c in f))
+                parts = page_parts(coh, s.cohorts_per_page)
+                for i, chunk in enumerate(parts, 1):     # unnumbered, so it also sorts after the event pages
+                    stem = f"{safe_name(gene)}_expression" + (f"_p{i}" if len(parts) > 1 else "")
+                    p = expression_panel(ds, gene, chunk, ep, settings=s, model=adj_model or base_model,
+                                         out_dir=out_dir / "pages", stem=stem,
+                                         part=(i, len(parts)) if len(parts) > 1 else None)
+                    if p is None:
+                        break
+                    p.figure.savefig(pdf, format="pdf")
+                    expr_pages.append(out_dir / "pages" / f"{stem}.png")
+                    log(f"  expression page: {gene} ({', '.join(chunk)})")
     ranked["page"] = ranked.event_id.map(page_col).fillna("")
     ranked.to_csv(ranked_path, index=False, lineterminator="\n")
-    report = _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pages, call, ptab, gex_cells)
+    report = _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pages, call, ptab, gex_cells,
+                     hit_left)
     (out_dir / "report.md").write_text(report)
     out.events, out.pages = ranked, pages
     out.paths = dict(report=out_dir / "report.md", events=ranked_path, cells=out_dir / "cells.csv",
                      overview=out_dir / "overview.png", pdf=out_dir / "probe.pdf", pages=out_dir / "pages")
+    if expr_pages:
+        out.paths["expression_pages"] = expr_pages[0] if len(expr_pages) == 1 else expr_pages
     if ptab is not None:
         ptab.to_csv(out_dir / "proteins.csv", index=False, lineterminator="\n")
         out.paths["proteins"] = out_dir / "proteins.csv"
@@ -348,6 +386,15 @@ def _slice(res: Results, event: str) -> Results:
                    else res.cox_terms, settings=res.settings, model=res.model)
 
 
+KM_RULES = {"km_split", "km_split_expression"}      # settings that move the KM split rather than relax a gate
+
+
+def _value_name(types) -> str:
+    """What the events' values are called in text that covers them all: PSI, HIT index, or PSI or HIT index."""
+    q = {quantity(t) for t in types}
+    return " or ".join(n for n in ("PSI", "HIT index") if n in q) or "PSI"
+
+
 def _have(n: int) -> str:
     return "has" if n == 1 else "have"
 
@@ -361,11 +408,12 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
         else cells.iloc[:0]
     tk = cells[cells.km_status.eq("tested")]
     name = (lambda r: f"{ds.events.at[r.event_id, 'label']} {r.cohort}")
+    v = _value_name(ds.events.loc[cells.event_id.unique(), "event_type"])
     if len(t) and s.narrow_psi_below > 0:
         nar = t[t.psi_narrow.fillna(False).astype(bool)]
         sig = nar[nar.cox_p < s.alpha]
-        out.append(f"- **Narrow PSI range** ({s.narrow_psi_measure.upper()} of PSI below {s.narrow_psi_below:g} in the "
-                   f"fit cohort, so the HR covers a few PSI points): {len(nar)} of {len(t)} base-model fits"
+        out.append(f"- **Narrow {v} range** ({s.narrow_psi_measure.upper()} of {v} below {s.narrow_psi_below:g} in "
+                   f"the fit cohort, so the HR covers a few {v} points): {len(nar)} of {len(t)} base-model fits"
                    + (f"; with p < {s.alpha:g}: {', '.join(name(r) for r in sig.itertuples())}" if len(sig) else "")
                    + ".")
     if len(t) and s.cox_events_per_term > 0:
@@ -380,7 +428,7 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
         pb, pk = low(t, "ph_p"), low(tk, "km_ph_p")
         sig = pb[pb.cox_p < s.alpha]
         out.append(f"- **Non-proportional hazards** (Schoenfeld test on the Kaplan–Meier time scale, p below "
-                   f"{s.ph_note_below:g}; the HR then averages an effect that changes over follow-up): the PSI term in "
+                   f"{s.ph_note_below:g}; the HR then averages an effect that changes over follow-up): the {v} term in "
                    f"{len(pb)} of {len(t)} base-model fits"
                    + (f" (with p < {s.alpha:g}: {', '.join(name(r) for r in sig.itertuples())})" if len(sig) else "")
                    + f"; the KM split in {len(pk)} of {len(tk)} log-rank tests. Look at the KM curves of those cells.")
@@ -390,12 +438,13 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
             "- All are notes on the pages and in `cells.csv`; every test ran and no result is removed. Settings: "
             "`narrow_psi_below`, `narrow_psi_measure`, `cox_events_per_term`, `ph_note_below`.", ""]
 
+
 def _fmt(v, nd=2):
     return "–" if v is None or (isinstance(v, float) and not np.isfinite(v)) else f"{v:.{nd}f}"
 
 
 def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pages, call, ptab=None,
-            gex_cells=None) -> str:
+            gex_cells=None, hit_left: int = 0) -> str:
     from .plot.style import fp
 
     has_expr = ds.expression is not None
@@ -409,19 +458,26 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
     n_adj_sig = int((cells.get("adj_cox_status", pd.Series(dtype=object)).eq("tested") &
                      (cells.get("adj_cox_p", pd.Series(dtype=float)) < s.alpha)).sum()) if adj_model else 0
     meas = ranked[ranked.measurable] if len(ranked) else ranked
+    v = _value_name(ranked.event_type) if len(ranked) else "PSI"
+    has_hit = bool(len(ranked)) and bool(ranked.event_type.map(opt_in).any())
     L = [f"# splice-assay probe · {', '.join(sorted(set(ranked.gene)))[:120]} · {ep}", "",
          f"splice-assay {__version__}. **Everything here is nominal: a probe ranks candidates for a closer look; it "
          "does not test a hypothesis.**", "",
          "## What was run", "",
-         f"- **Events:** {len(ranked)} ({len(meas)} measurable in at least one cohort).",
+         f"- **Events:** {len(ranked)} ({len(meas)} measurable in at least one cohort)."
+         + (f" {hit_left} HIT-index event{'s were' if hit_left != 1 else ' was'} left out: the HIT index covers every "
+            "exon, a far larger set; `--include-hit` adds them." if hit_left else ""),
          f"- **Cohorts:** {cells.cohort.nunique()}.",
          (f"- **Subset:** {ds.notes['subset']['patients']} of {ds.notes['subset']['of_patients']} patients "
           f"({ds.notes['subset']['samples']} samples, their normals included), selected by "
           f"{ds.notes['subset']['by']}."
           if (ds.notes or {}).get("subset") else None),
          f"- **Endpoint:** {ep}.",
-         (f"- **Settings changed from the defaults:** {s.changed_text()}. Results that pass only these relaxed gates "
-          "rest on fewer samples or events than the defaults require." if s.changed() else None),
+         (f"- **Settings changed from the defaults:** {s.changed_text()}."
+          + (" Results that pass only these relaxed gates rest on fewer samples or events than the defaults require."
+             if set(s.changed()) - KM_RULES else "")
+          + (" The KM arms are split by the rule given, not at the median." if KM_RULES & set(s.changed()) else "")
+          if s.changed() else None),
          f"- **Base model** (the forest on every page): Cox {base_model.describe(has_expr)}.",
          ("- **Adjusted model** (the model rows on every page and the ranking): Cox "
           f"{adj_model.describe(has_expr)}"
@@ -444,13 +500,14 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
          f"{s.alpha * n_km:.0f} by "
          "chance.",
          (f"- **No Cox model could be fitted:** no cohort reaches {s.cox_min_n} patients and {s.cox_min_events} "
-          "events with this PSI measured (Settings cox_min_n, cox_min_events). The ranking uses the KM tests."
+          f"events with this {v} measured (Settings cox_min_n, cox_min_events). The ranking uses the KM tests."
           if n_cox == 0 else None),
          "- **q values** are Benjamini–Hochberg within each gene, with each kind of test its own family over all "
-         f"of the gene's events × cohorts tested for {ep}:",
+         f"of the gene's events × cohorts tested for {ep}"
+         + (" (HIT-index events form families of their own)" if has_hit else "") + ":",
          f"  - {cmp_} within patients (`paired_q`) and over all samples (`unpaired_q`);",
          "  - KM (`km_q`);",
-         "  - Cox on PSI in the base model (`cox_q`, the forest) and in the adjusted model (`adj_cox_q`, the model "
+         f"  - Cox on {v} in the base model (`cox_q`, the forest) and in the adjusted model (`adj_cox_q`, the model "
          "rows).",
          f"  - A family of fewer than {s.fdr_min_family} tests gets no q; `*_q_tests` gives each family's size. The "
          "pages print q beside p. Host-gene expression is not adjusted.",
@@ -480,8 +537,8 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
                  f"({r.cox_p05_hr_up}/{r.cox_p05_hr_down}) | {r.km_p05} | {r.expected_by_chance:.1f} | {r.group_hits} | "
                  f"{r.group_and_survival} | {r.best_cohort or '–'} | {_fmt(r.best_hr_per_iqr)} | {p_txt} |{prot} {page} |")
     if flat:
-        L += ["", "† PSI barely varies in the best cohort (IQR 0): the association rests on a few samples, and there "
-                  "is no HR per IQR."]
+        L += ["", f"† {v} barely varies in the best cohort (IQR 0): the association rests on a few samples, and "
+                  "there is no HR per IQR."]
     unmeas = ranked[~ranked.measurable] if len(ranked) else ranked
     if len(unmeas):
         L += ["", f"Not measurable in any cohort (coverage or gates): {len(unmeas)} event(s), listed in events.csv."]
@@ -501,8 +558,9 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
         sig = t[t.cox_p < s.alpha] if len(t) else t
         L += ["", "## Host-gene expression", "",
               f"- **What:** the same tests for the host gene's own expression ({', '.join(sorted(set(gex_cells.gene)))}): "
-              "case vs reference, a KM split at its median, and Cox on expression per SD plus the adjusted model's "
-              "clinical terms. Each page shows them under the splicing rows.",
+              "case vs reference, a KM split, and Cox on expression per SD plus the adjusted model's clinical terms. "
+              "They have their own page per gene (`pages/<gene>_expression.png`, last in `probe.pdf`): a forest of "
+              "every cohort, then the cohorts of the gene's splicing pages in full.",
               f"- **Cox:** {len(t)} cohort{'' if len(t) == 1 else 's'} tested; expression has p < {s.alpha:g} in "
               f"{len(sig)}"
               + (f" ({', '.join(f'{r.cohort} HR {r.hr_per_sd:.2f}' for r in sig.sort_values('cox_p').head(6).itertuples())})"

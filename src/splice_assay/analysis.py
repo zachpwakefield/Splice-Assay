@@ -9,6 +9,7 @@ import pandas as pd
 
 from .config import Settings
 from .dataset import Dataset, InputError
+from .events import opt_in, quantity
 from .stats.survival import CoxModel, expression_cell, survival_cell
 from .stats.tissue import compare_groups
 
@@ -104,11 +105,32 @@ GROUP_FIRST = ["event_id", "gene", "cohort", "paired_status", "paired_n_pairs", 
                "unpaired_hit_status", "unpaired_hit", "group_hit", "within_patient_support", "no_within_patient_check",
                "composition_sensitive"]
 SV_FIRST = ["event_id", "gene", "cohort", "endpoint", "n_survival", "n_obs", "frac_obs", "off_modal", "eligible",
-            "cutoff", "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr", "km_p",
-            "km_q", "cox_model", "cox_status", "cox_n", "cox_events", "psi_iqr", "cox_beta", "cox_se", "cox_p", "cox_q",
-            "hr_per_step",
+            "cutoff", "km_split", "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr",
+            "km_p", "km_q", "cox_model", "cox_status", "cox_n", "cox_events", "psi_iqr", "cox_beta", "cox_se", "cox_p",
+            "cox_q", "hr_per_step",
             "ci_low_step", "ci_high_step", "hr_per_iqr", "ci_low_iqr", "ci_high_iqr", "cox_events_per_term",
             "psi_narrow", "ph_p", "km_ph_p", "km_notes"]
+
+
+def event_settings(event_type, s: Settings) -> Settings:
+    """The rules of an event type. HIT index events (-1..1, not PSI) have no 0/1 robustness check, because -1, 0 and
+    1 carry meaning, and their own effect threshold (hit_min_abs_delta); every other type uses `s` as it is."""
+    if str(event_type).upper() == "HIT":
+        return s.replace(robust_01=False, min_abs_delta=s.hit_min_abs_delta)
+    return s
+
+
+def default_events(ds: Dataset, include_hit: bool = False) -> list[str]:
+    """The events analysed when none are named: every event except HIT-index ones, unless include_hit."""
+    return [e for e in ds.psi.index if include_hit or not opt_in(ds.events.at[e, "event_type"])]
+
+
+def _with_family(df: pd.DataFrame, ds: Dataset) -> pd.DataFrame:
+    """A temporary _family column, the quantity of each row's event: HIT-index tests form their own q families, so
+    including them never changes the q values of the PSI events."""
+    if not len(df):
+        return df.assign(_family=pd.Series(dtype=object))
+    return df.assign(_family=df.event_id.map(ds.events.event_type).map(quantity))
 
 
 def gene_fdr(df: pd.DataFrame, test: str, by: list[str], min_family: int) -> pd.DataFrame:
@@ -143,15 +165,22 @@ def _names(x, what, known) -> list[str]:
 
 # ============================================================================================ run
 def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Settings | None = None,
-            model: CoxModel | None = None) -> Results:
-    """Case-vs-reference and survival statistics for the chosen events, cohorts and endpoints (default: all).
+            model: CoxModel | None = None, include_hit: bool = False) -> Results:
+    """Case-vs-reference and survival statistics for the chosen events, cohorts and endpoints (default: all; without
+    named events, HIT-index events only with include_hit).
 
     q values: Benjamini-Hochberg within each gene, separately for the paired tests, the all-samples tests, the KM
-    tests and the Cox PSI terms (the survival ones per endpoint), over the events and cohorts analysed together. For
-    gene-wide q, analyse all of a gene's events (panel and probe do)."""
+    tests and the Cox PSI terms (the survival ones per endpoint), over the events and cohorts analysed together;
+    HIT-index events form families of their own. For gene-wide q, analyse all of a gene's events (panel and probe
+    do)."""
     s = settings or Settings()
     model = model or CoxModel()
-    events = list(ds.psi.index) if events is None else _names(events, "event(s)", set(ds.psi.index))
+    if events is None:
+        events = default_events(ds, include_hit)
+        if not events and len(ds.psi):
+            raise InputError("only HIT-index events in the data: add --include-hit (include_hit=True), or name them")
+    else:
+        events = _names(events, "event(s)", set(ds.psi.index))
     cohorts = ds.cohorts if cohorts is None else _names(cohorts, "cohort(s)", set(ds.cohorts))
     if endpoints is None:
         endpoints = ds.endpoints
@@ -164,6 +193,8 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
     g_rows, sv_rows, t_rows = [], [], []
     for eid in events:
         gene = ds.events.at[eid, "gene"]
+        etype = ds.events.at[eid, "event_type"]
+        se = event_settings(etype, s)                   # HIT index events have their own rules
         v = ds.psi.loc[eid]
         host_gene = ds.events.at[eid, "expression_gene"]
         host = None
@@ -172,7 +203,7 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
         for c in cohorts:
             d = gd.cohorts[c]
             g_rows.append(dict(event_id=eid, gene=gene, cohort=c,
-                               **compare_groups(v, d["pair_c"], d["pair_r"], d["cases"], d["refs"], s)))
+                               **compare_groups(v, d["pair_c"], d["pair_r"], d["cases"], d["refs"], se)))
             if sd is None:
                 continue
             base = sd.cohorts[c]
@@ -181,8 +212,8 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
             for ep in endpoints:
                 E = base["ep"][ep]
                 rec = dict(event_id=eid, gene=gene, cohort=c, endpoint=ep)
-                row, terms = survival_cell(x_base, E["pos"], E["time"], E["event"], h_base, s, model,
-                                           base["clinical"])
+                row, terms = survival_cell(x_base, E["pos"], E["time"], E["event"], h_base, se, model,
+                                           base["clinical"], quantity=quantity(etype))
                 if ds.expression is not None and host is None and model.expression and \
                         row["cox_status"] != "coverage_gate":
                     row = {k: v_ for k, v_ in row.items() if not k.startswith(("cox_", "hr_", "ci_", "ph_", "expr_"))
@@ -191,14 +222,14 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
                     terms = []
                 sv_rows.append(dict(rec, **row))
                 t_rows += [dict(rec, **t) for t in terms]
-    groups = pd.DataFrame(g_rows)
+    groups = _with_family(pd.DataFrame(g_rows), ds)
     for test in ("paired", "unpaired"):                    # q within each gene, per test (see docs/methods.md)
-        groups = gene_fdr(groups, test, ["gene"], s.fdr_min_family)
-    groups = _order(groups, GROUP_FIRST)
-    sv = pd.DataFrame(sv_rows)
+        groups = gene_fdr(groups, test, ["gene", "_family"], s.fdr_min_family)
+    groups = _order(groups.drop(columns="_family"), GROUP_FIRST)
+    sv = _with_family(pd.DataFrame(sv_rows), ds)
     for test in ("km", "cox"):
-        sv = gene_fdr(sv, test, ["gene", "endpoint"], s.fdr_min_family)
-    sv = _order(sv, SV_FIRST) if sv_rows else pd.DataFrame(columns=SV_FIRST)
+        sv = gene_fdr(sv, test, ["gene", "endpoint", "_family"], s.fdr_min_family)
+    sv = _order(sv.drop(columns="_family"), SV_FIRST) if sv_rows else pd.DataFrame(columns=SV_FIRST)
     if len(sv):
         with np.errstate(invalid="ignore"):
             km_sig = sv.km_status.eq("tested") & (sv.get("km_p", np.nan) < s.alpha)
@@ -211,8 +242,8 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
 @dataclass
 class ExpressionResults:
     """The same statistics for host-gene expression itself. groups: one row per gene x cohort; survival: one row per
-    gene x cohort x endpoint (KM on the median split, Cox on expression + the model's clinical covariates); cox_terms:
-    every term of every fitted model."""
+    gene x cohort x endpoint (KM split by Settings.km_split_expression, Cox on expression + the model's clinical
+    covariates); cox_terms: every term of every fitted model."""
 
     groups: pd.DataFrame
     survival: pd.DataFrame
@@ -237,8 +268,8 @@ class ExpressionResults:
 
 
 GEX_SV_FIRST = ["gene", "cohort", "endpoint", "n_survival", "n_obs", "frac_obs", "off_modal", "eligible", "cutoff",
-                "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr", "km_p", "cox_model",
-                "cox_status", "cox_n", "cox_events", "expr_sd", "cox_beta", "cox_se", "cox_p", "hr_per_sd",
+                "km_split", "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr", "km_p",
+                "cox_model", "cox_status", "cox_n", "cox_events", "expr_sd", "cox_beta", "cox_se", "cox_p", "hr_per_sd",
                 "ci_low_sd", "ci_high_sd", "cox_events_per_term", "ph_p", "km_ph_p", "km_notes"]
 
 

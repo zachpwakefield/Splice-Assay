@@ -49,9 +49,12 @@ def test_figures_and_report_use_the_names(tables, tmp_path):
                        detail=sa.CoxModel().with_clinical(("age",)))
     text = _texts(p.figure)
     for want in ("Higher in responder", "(responder − non-responder)", "Non-responder", "Responder",
-                 "no responder vs non-responder", "responder vs non-responder, a KM split"):
+                 "no responder vs non-responder"):
         assert want in text, want
     assert "umour" not in text and "ormal" not in text
+    g = _texts(sa.expression_panel(ds, "SYN1", ["COH1", "COH4"], "OS", settings=FAST,
+                                   model=sa.CoxModel().with_clinical(("age",))).figure)
+    assert "responder vs non-responder, a KM split" in g and "umour" not in g and "ormal" not in g
     res = probe(ds, genes=["SYN1"], settings=FAST, out_dir=tmp_path / "pr", top=1, max_pages=1, log=lambda *_: None)
     report = res.paths["report"].read_text()
     assert "responder–non-responder" in report and "umour" not in report and "ormal" not in report
@@ -59,7 +62,7 @@ def test_figures_and_report_use_the_names(tables, tmp_path):
 
 def test_names_keep_their_capitals(tables):
     ds = sa.Dataset.from_tables(**_renamed(tables, {"tumour": "IDH-mutant", "normal": "IDH-wildtype"}))
-    text = _texts(sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, gex=False).figure)
+    text = _texts(sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST).figure)
     assert "Higher in IDH-mutant" in text and "(IDH-mutant − IDH-wildtype)" in text
 
 

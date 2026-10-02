@@ -280,8 +280,9 @@ def normalise_samples(df: pd.DataFrame, case=None, reference=None, columns=None)
 
 
 def normalise_psi(df: pd.DataFrame, samples: pd.DataFrame, event_ids=None, columns=None,
-                  subset: bool = False) -> pd.DataFrame:
-    """Wide float matrix: one row per event_id, one column per sample of the samples table (its order)."""
+                  subset: bool = False, signed=()) -> pd.DataFrame:
+    """Wide float matrix: one row per event_id, one column per sample of the samples table (its order). Values lie in
+    [0, 1], except for the events in `signed` (HIT index events, -1 to 1)."""
     df = _map_columns(df, columns)
     if "event_id" not in df.columns and df.index.name == "event_id":
         df = df.reset_index()
@@ -322,12 +323,14 @@ def normalise_psi(df: pd.DataFrame, samples: pd.DataFrame, event_ids=None, colum
     v = wide.to_numpy()
     if np.isinf(v).any():
         raise InputError("psi: infinite values; use an empty cell for a missing PSI")
-    fin = v[np.isfinite(v)]
-    if fin.size and (fin.min() < -1e-9 or fin.max() > 1 + 1e-9):
-        hint = " Values above 1 look like percentages: divide by 100." if fin.max() > 1 else ""
-        raise InputError(f"psi: values must lie in [0, 1]; found {fin.min():g} to {fin.max():g}.{hint}")
-    if fin.size and (fin.min() < 0 or fin.max() > 1):
-        wide = wide.clip(0.0, 1.0)
+    hit = wide.index.isin(set(signed))
+    for rows, lo, what in ((~hit, 0.0, "[0, 1]"), (hit, -1.0, "[-1, 1] (HIT index)")):
+        fin = v[rows][np.isfinite(v[rows])]
+        if fin.size and (fin.min() < lo - 1e-9 or fin.max() > 1 + 1e-9):
+            hint = " Values above 1 look like percentages: divide by 100." if fin.max() > 1 else ""
+            raise InputError(f"psi: values must lie in {what}; found {fin.min():g} to {fin.max():g}.{hint}")
+        if fin.size and (fin.min() < lo or fin.max() > 1):
+            wide.loc[rows] = wide.loc[rows].clip(lo, 1.0)
     wide.index.name, wide.columns.name = "event_id", "sample_id"
     return wide
 
@@ -710,7 +713,8 @@ class Dataset:
             P, E = split_psi_events(P if P is not None else E, s, columns, which)
             sources["events"] = f"{which} table"
         ev = normalise_events(E, event_ids, columns)
-        p = normalise_psi(P, s, event_ids, columns, subset=subset is not None)
+        p = normalise_psi(P, s, event_ids, columns, subset=subset is not None,
+                          signed=ev.index[ev.event_type.astype(str).str.upper().eq("HIT")])
         if event_ids is not None:
             want = list(dict.fromkeys(map(str, event_ids)))
             miss = [e for e in want if e not in p.index or e not in ev.index]

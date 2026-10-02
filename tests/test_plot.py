@@ -96,7 +96,7 @@ def test_data_without_reference_samples(tables, gtf_path):
                 psi=tables["psi"][tables["psi"].sample_id.isin(s.sample_id[s.group.eq("tumour")])])
     ds = sa.Dataset.from_tables(**only)
     assert not ds.has_reference
-    p = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", gtf=gtf_path, settings=FAST, gex=False)
+    p = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", gtf=gtf_path, settings=FAST)
     assert "pairs" not in set(p.table.panel) and "all_samples" not in set(p.table.panel)
     assert len(p.figure.axes) == 3                                   # schematic, KM, HR forest
 
@@ -139,7 +139,7 @@ def test_stacked_layout_for_three_or_more_cohorts(ds, results):
     """With models for three or more cells, each row carries its own model and the forest moves below."""
     clinical = sa.CoxModel().with_clinical(("age", "stage"), baseline={"stage": "I"})
     p = sa.event_panel(ds, "SYN1:SE:1", ["COH1", "COH2", "COH3"], "OS", results=results, detail=clinical,
-                       settings=FAST, gex=False)
+                       settings=FAST)
     assert set(p.table[p.table.panel.eq("cox_detail")].tag) == {f"SYN1:SE:1|COH{i}" for i in (1, 2, 3)}
     axes = p.figure.axes
     forest_hr = [a for a in axes if a.get_xlabel().startswith("HR per IQR")][0]
@@ -176,3 +176,45 @@ def test_km_header_notes_non_proportional_hazards():
         ax = fig.add_axes([0.2, 0.3, 0.7, 0.5])
         K.draw(fig, ax, t, e, high, dict(row, km_ph_p=ph), "Overall survival", [], "t", sa.Settings())
         assert any("non-proportional hazards (p 0.003)" in x.get_text() for x in ax.texts) == shown
+
+
+def _texts(p):
+    return [t.get_text() for t in p.figure.texts] + [t.get_text() for a in p.figure.axes for t in a.texts]
+
+
+def test_km_header_names_the_split_and_the_title_the_event(ds, results):
+    from splice_assay.plot.style import fcut
+    p = sa.event_panel(ds, ["SYN1:SE:1", "SYN1:RI:1"], "COH1", "OS", settings=FAST, results=results)
+    cut = results.survival.set_index(["event_id", "cohort", "endpoint"]).at[("SYN1:SE:1", "COH1", "OS"), "cutoff"]
+    head = [t for t in _texts(p) if t.startswith("split at ")]
+    assert len(head) == 2 and head[0].splitlines()[0] == f"split at median PSI {fcut(cut)}"
+    detail = list(p.table[p.table.panel.eq("event_detail")].text)
+    assert detail[0].startswith("SE:1: cassette exon chr7:103,001–103,150 (150 nt) between exons chr7:102,001–102,100")
+    assert any(d.startswith("RI:1: retained intron chr7:103,151–104,000") for d in detail)
+    assert all(d in _texts(p) for d in detail)                                 # drawn under the title
+    q = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST.replace(km_split=0.7))
+    assert [t for t in _texts(q) if t.startswith("split at ")][0].splitlines()[0] == "split at PSI 0.7 (set)"
+    assert q.table[q.table.panel.eq("km_arms")].n_low.iloc[0] < p.table[p.table.panel.eq("km_arms")].n_low.iloc[0]
+
+
+def test_proportional_hazards_daggers(ds, tmp_path):
+    """A dagger follows each test whose proportional-hazards p is below ph_note_below: the KM log-rank p, the forest
+    CI and the p of each model row; the legend says what it means. None at 0."""
+    m = sa.CoxModel().with_clinical(("age",))
+    every = FAST.replace(ph_note_below=1.0)                      # every finite PH p is below 1
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=every, detail=m)
+    texts = _texts(p)
+    assert "non-proportional hazards (p < 1)" in texts
+    km = next(t for t in texts if t.startswith("split at ")).splitlines()
+    assert "log-rank p" in km[1] and km[1].endswith(" †")
+    assert km[-1].startswith("† non-proportional hazards (p ")
+    assert "†" in [t.get_text() for a in p.figure.axes for t in a.texts]          # the forest CI
+    band = p.table[p.table.panel.eq("cox_detail")]
+    assert band.ph_marked.all() and sum(t.endswith(" †") for t in texts) == len(band)
+    f = sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=m, settings=every)
+    assert f.table[f.table.panel.eq("term")].ph_marked.all()
+    g = sa.expression_panel(ds, "SYN1", ["COH1"], "OS", settings=every, model=m)
+    assert "non-proportional hazards (p < 1)" in _texts(g)
+    for page in (sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST.replace(ph_note_below=0), detail=m),
+                 sa.expression_panel(ds, "SYN1", ["COH1"], "OS", settings=FAST.replace(ph_note_below=0), model=m)):
+        assert not any("†" in t or "non-proportional" in t for t in _texts(page))

@@ -16,6 +16,9 @@ def _frame(ax, ylabel=True, quantity="PSI", lim=None):
     if lim is None:
         ax.set_ylim(-0.02, 1.02)
         ax.set_yticks(*YTICKS)
+    elif quantity == "HIT index":                         # the signed -1..1 scale, in halves
+        ax.set_ylim(*lim)
+        ax.set_yticks([-1, -0.5, 0, 0.5, 1], ["−1", "−0.5", "0", "0.5", "1"])
     else:
         ax.set_ylim(*lim)
         ax.yaxis.set_major_locator(MaxNLocator(4))

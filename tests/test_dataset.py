@@ -277,7 +277,7 @@ def test_keep_on_the_command_line(tables, tmp_path, capsys):
     res = probe(ds, genes=["SYN1"], settings=sa.Settings(formats=("png",), dpi=60), out_dir=tmp_path / "pr", top=1,
                 max_pages=1, log=lambda *_: None)
     assert "- **Subset:**" in res.paths["report"].read_text()
-    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=sa.Settings(formats=("png",), dpi=60), gex=False)
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=sa.Settings(formats=("png",), dpi=60))
     assert any("subset: keep" in t.get_text() for t in p.figure.texts)
 
 

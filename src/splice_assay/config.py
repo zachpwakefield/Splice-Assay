@@ -17,6 +17,19 @@ DRAWING = {"km_max_years", "km_tick_years", "gene_model_min_frac", "nested_bioty
            "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page"}
 
 
+def _split_rule(v, name: str):
+    """'median', 'mean' or a number (a numeric string from the command line counts)."""
+    if isinstance(v, str) and v.strip().lower() in ("median", "mean"):
+        return v.strip().lower()
+    try:
+        x = float(v)
+    except (TypeError, ValueError):
+        raise ValueError(f'Settings.{name} must be "median", "mean" or a number, not {v!r}') from None
+    if not np.isfinite(x):
+        raise ValueError(f"Settings.{name} must be finite")
+    return x
+
+
 @dataclass(frozen=True)
 class Settings:
     # ------------------------------------------------------------------ tumour vs normal
@@ -26,10 +39,15 @@ class Settings:
     min_abs_delta: float = 0.10       # a hit needs round(|delta median PSI|, 12) > this
     robust_01: bool = True            # a hit must survive dropping PSI values of exactly 0 or 1
     gex_min_abs_delta: float = 1.0    # an expression hit needs |delta median| > this (on log2 expression: two-fold)
+    hit_min_abs_delta: float = 0.20   # a HIT-index hit needs |delta median| > this (the -1..1 scale is twice PSI's);
+                                      # HIT events have no 0/1 robustness check
     fdr_min_family: int = 10          # q values (BH within a gene) only for families of at least this many tests
     # ------------------------------------------------------------------ survival
     coverage_frac: float = 0.5        # PSI observed in at least this fraction of the cohort's survival samples
     min_off_modal: int = 10           # ... and at least this many observed values away from the modal value
+    km_split: object = "median"       # the KM split of an event's values (PSI or HIT index): "median", "mean" or a
+                                      # number; the high arm is above it
+    km_split_expression: object = "median"  # the same for host-gene expression (a number is in expression units)
     km_min_group: int = 10            # log-rank: at least this many patients in each arm
     km_min_events: int = 10           # ... and at least this many events
     cox_min_n: int = 30               # Cox: at least this many patients
@@ -78,12 +96,14 @@ class Settings:
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"Settings.{name} must lie in (0, 1]")
         for name in ("min_abs_delta", "low_psi_variance_sd", "gex_min_abs_delta", "cox_events_per_term",
-                     "narrow_psi_below", "ph_note_below"):
+                     "narrow_psi_below", "ph_note_below", "hit_min_abs_delta"):
             if getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be >= 0")
         for name in ("psi_step", "ci_z", "days_per_year", "km_max_years", "km_tick_years", "nr_refit_step_size"):
             if not getattr(self, name) > 0:
                 raise ValueError(f"Settings.{name} must be > 0")
+        for name in ("km_split", "km_split_expression"):
+            object.__setattr__(self, name, _split_rule(getattr(self, name), name))
         if self.narrow_psi_measure not in ("iqr", "sd"):
             raise ValueError('Settings.narrow_psi_measure must be "iqr" or "sd"')
         if self.time_unit not in TIME_UNITS:
@@ -109,9 +129,9 @@ class Settings:
                 if f.name not in DRAWING and getattr(self, f.name) != getattr(default, f.name)}
 
     def changed_text(self) -> str:
-        """'min_pairs 7 (default 10), cox_min_events 10 (default 20)', or ''."""
-        return ", ".join(f"{k} {v:g} (default {d:g})" if isinstance(v, (int, float)) and not isinstance(v, bool)
-                         else f"{k} {v} (default {d})" for k, (v, d) in self.changed().items())
+        """'min_pairs 7 (default 10), km_split mean (default median)', or ''."""
+        f = (lambda x: f"{x:g}" if isinstance(x, (int, float)) and not isinstance(x, bool) else str(x))
+        return ", ".join(f"{k} {f(v)} (default {f(d)})" for k, (v, d) in self.changed().items())
 
     @classmethod
     def from_dict(cls, d: dict) -> "Settings":

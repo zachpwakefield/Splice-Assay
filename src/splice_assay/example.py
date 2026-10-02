@@ -1,7 +1,10 @@
 """A synthetic dataset for trying the package and for its tests. Everything here is simulated.
 
-Two genes on made-up coordinates: SYN1 (chr7, plus strand) with a cassette exon (SE), an alternative 3' splice site
-(A3SS) and a retained intron hosting a snoRNA (RI); SYN2 (chr12, minus strand) with mutually exclusive exons (MXE).
+Three genes on made-up coordinates: SYN1 (chr7, plus strand) with a cassette exon (SE), an alternative 3' splice site
+(A3SS) and a retained intron hosting a snoRNA (RI); SYN2 (chr12, minus strand) with mutually exclusive exons (MXE);
+SYN3 (chr3, plus strand) with two alternative first exons (AFE), two alternative last exons (ALE) and the HIT index of
+two internal exons, as HITindex reports them (write() also writes those as HITindex matrices, for import-hitindex).
+SYN3's values come from their own random stream, after everything else, so SYN1 and SYN2 do not change.
 Four cohorts: COH1 (40 pairs, planted tumour-normal and survival effects), COH2 (6 pairs plus unpaired normals, so no
 within-patient test), COH3 (24 pairs, effects on other events) and COH4 (no normals). A clinical table holds age
 (which raises the hazard), sex and stage (stage II and III raise it) for the Cox covariate example. A protein
@@ -50,6 +53,12 @@ GENES = [
         "SYN1-203": ("lncRNA", [(100000, 100200), (101970, 102100), (103000, 103150), (104000, 104300), (105500, 105900)]),
         "SYN1-204": ("retained_intron", [(100000, 100200), (102000, 103150)]),
     }, [("SNORD900", (103500, 103580))]),
+    ("SYN3", "SYNG0003", "chr3", "+", (300000, 310000), {
+        "SYN3-201": ("lncRNA", [(300000, 300200), (303000, 303100), (305000, 305150), (308000, 308300)]),
+        "SYN3-202": ("lncRNA", [(301000, 301150), (303000, 303100), (305000, 305150), (309000, 309400)]),
+        "SYN3-203": ("lncRNA", [(300000, 300200), (303000, 303100), (309000, 309400)]),
+        "SYN3-204": ("lncRNA", [(301000, 301150), (305000, 305150), (308000, 308300)]),
+    }, []),
     ("SYN2", "SYNG0002", "chr12", "-", (200000, 206000), {
         "SYN2-201": ("lncRNA", [(200000, 200400), (204000, 204120), (205500, 206000)]),
         "SYN2-202": ("lncRNA", [(200000, 200400), (203000, 203090), (205500, 206000)]),
@@ -154,6 +163,74 @@ def protein_cache(seed: int = 11) -> dict[str, pd.DataFrame]:
     return dict(exons=pd.DataFrame(ex_rows), proteins=pd.DataFrame(pr_rows), features=pd.DataFrame(ft_rows))
 
 
+# SYN3's HITindex events, as import-hitindex numbers them: (type, exon 0-based half-open, other first/last exon)
+HIT_EVENTS = [("AFE", (300000, 300200), (301000, 301150)), ("AFE", (301000, 301150), (300000, 300200)),
+              ("ALE", (308000, 308300), (309000, 309400)), ("ALE", (309000, 309400), (308000, 308300)),
+              ("HIT", (303000, 303100), None), ("HIT", (305000, 305150), None)]
+
+
+def _hitindex_events() -> pd.DataFrame:
+    rows, n = [], {}
+    for kind, (a, b), other in HIT_EVENTS:
+        n[kind] = n.get(kind, 0) + 1
+        rows.append(dict(event_id=f"SYN3:{kind}:{n[kind]:04d}", gene="SYN3", gene_id="SYNG0003", chrom="chr3",
+                         strand="+", event_type=kind, constant="" if other is None else f"{other[0]}-{other[1]}",
+                         variable=f"{a}-{b}", label=f"{kind}:{n[kind]:04d}",
+                         source_id=f"SYNG0003.1;chr3:{a + 1}-{b};{kind.lower()}"))
+    return pd.DataFrame(rows)
+
+
+def _hitindex_values(samples, survival, seed) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """SYN3 values (long) and expression, from their own random stream: AFE:0001 higher in COH1 tumours; ALE:0001
+    lower in COH3 tumours; the HIT index of HIT:0001 rises by 0.35 in COH1 tumours; HIT:0002 goes with shorter OS.
+    The second first and last exons take the rest of the usage (1 - the first, plus noise)."""
+    rng = np.random.default_rng(seed + 303)
+    tum = samples.group.eq("tumour").to_numpy()
+    coh = samples.cohort.to_numpy()
+    n = len(samples)
+    u = rng.normal(0, 0.6, n)
+    logistic = (lambda z: 1 / (1 + np.exp(-z)))
+    afe = logistic(0.4 + u + rng.normal(0, 0.4, n) + 1.0 * (tum & (coh == "COH1")))
+    ale = logistic(0.2 + rng.normal(0, 0.5, n) - 0.8 * (tum & (coh == "COH3")))
+    hit1 = -0.05 + 0.08 * rng.normal(size=n) + 0.35 * (tum & (coh == "COH1"))
+    os_ = survival[survival.endpoint.eq("OS")].set_index("patient_id").time
+    z = np.zeros(n)
+    for c in np.unique(coh):                         # shorter OS -> higher HIT:0002 (standardised log time per cohort)
+        m = (coh == c) & tum
+        t = np.log(samples.patient_id[m].map(os_).to_numpy(float))
+        ok = np.isfinite(t)
+        if ok.sum() > 2:
+            zz = np.zeros(m.sum())
+            zz[ok] = (t[ok] - t[ok].mean()) / t[ok].std()
+            z[np.flatnonzero(m)] = zz
+    hit2 = 0.10 - 0.12 * z + 0.10 * rng.normal(size=n)
+    vals = {"SYN3:AFE:0001": afe, "SYN3:AFE:0002": 1 - afe + rng.normal(0, 0.02, n),
+            "SYN3:ALE:0001": ale, "SYN3:ALE:0002": 1 - ale + rng.normal(0, 0.02, n),
+            "SYN3:HIT:0001": hit1, "SYN3:HIT:0002": hit2}
+    rows = []
+    for e, v in vals.items():
+        lo = -1.0 if ":HIT:" in e else 0.0
+        v = np.round(np.clip(v, lo, 1.0), 3)
+        v[rng.uniform(size=n) < 0.03] = np.nan
+        rows += [dict(event_id=e, sample_id=sid, psi=float(x)) for sid, x in zip(samples.sample_id, v)]
+    expr = pd.DataFrame(dict(gene="SYN3", sample_id=samples.sample_id,
+                             value=np.round(5 + 0.8 * rng.normal(size=n), 4)))
+    return pd.DataFrame(rows), expr
+
+
+def hitindex_matrices(tables: dict) -> dict[str, pd.DataFrame]:
+    """SYN3's values as HITindex matrices (afe, ale, hit): rows '<gene_id>;<chrom>:<start>-<end>;<kind>' (1-based),
+    one column per sample."""
+    ev = tables["events"].dropna(subset=["source_id"]) if "source_id" in tables["events"] else tables["events"].iloc[:0]
+    ev = ev[ev.source_id.astype(str).ne("")]
+    wide = tables["psi"][tables["psi"].event_id.isin(ev.event_id)].pivot(index="event_id", columns="sample_id",
+                                                                           values="psi")
+    wide = wide.reindex(index=ev.event_id, columns=tables["samples"].sample_id)
+    wide.index = ev.source_id.to_numpy()
+    kind = ev.event_type.str.lower().to_numpy()
+    return {k: wide[kind == k].rename_axis("id") for k in ("afe", "ale", "hit")}
+
+
 def make(seed: int = 7) -> dict[str, pd.DataFrame]:
     """samples, psi (long), events, survival (OS and DSS, days), expression (log2(TPM + 1), long) and clinical."""
     rng = np.random.default_rng(seed)
@@ -214,18 +291,27 @@ def make(seed: int = 7) -> dict[str, pd.DataFrame]:
         disease = rng.uniform() < 0.75                # drawn for everyone, so the random stream never depends on outcomes
         surv_rows.append(dict(patient_id=r.patient_id, endpoint="DSS", time=t, event=int(died and disease)))
     survival = pd.DataFrame(surv_rows)
-    return dict(samples=samples, psi=psi, events=EVENTS.copy(), survival=survival, expression=expression,
-                clinical=pd.DataFrame(clin_rows))
+    hit_psi, hit_expr = _hitindex_values(samples, survival, seed)
+    return dict(samples=samples, psi=pd.concat([psi, hit_psi], ignore_index=True),
+                events=pd.concat([EVENTS, _hitindex_events()], ignore_index=True), survival=survival,
+                expression=pd.concat([expression, hit_expr], ignore_index=True), clinical=pd.DataFrame(clin_rows))
 
 
 def write(out_dir, seed: int = 7) -> dict[str, Path]:
-    """Write the synthetic tables (CSV) and the GTF into out_dir/data/, and a protein cache into out_dir/proteins/."""
+    """Write the synthetic tables (CSV) and the GTF into out_dir/data/, a protein cache into out_dir/proteins/, and
+    SYN3's AFE/ALE/HIT values as HITindex matrices into out_dir/hitindex/."""
     d = Path(out_dir) / "data"
     d.mkdir(parents=True, exist_ok=True)
     paths = {}
-    for name, df in make(seed).items():
+    tables = make(seed)
+    for name, df in tables.items():
         paths[name] = d / f"{name}.csv"
         df.to_csv(paths[name], index=False, lineterminator="\n")
+    hd = Path(out_dir) / "hitindex"                        # SYN3 again, as HITindex matrices (for import-hitindex)
+    hd.mkdir(parents=True, exist_ok=True)
+    for kind, m in hitindex_matrices(tables).items():
+        m.to_csv(hd / f"{kind}.csv", lineterminator="\n")
+    paths["hitindex"] = hd
     paths["gtf"] = d / "annotation.gtf"
     paths["gtf"].write_text(gtf_text())
     pc = Path(out_dir) / "proteins"
