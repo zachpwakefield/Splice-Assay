@@ -20,10 +20,12 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
 - **Statistics.**
   - Case vs reference per cohort: paired exact signed-rank and unpaired Mann–Whitney, with a hit rule that needs
     robustness to PSI 0/1. Within-patient support and composition diagnostics are also reported.
-  - Survival per cohort and endpoint: median-split KM and log-rank.
+  - Survival per cohort and endpoint: KM and log-rank, split at the median, the mean or a set value (`km_split`,
+    `--km-split`; `km_split_expression` for expression). The KM header names the split ("split at median PSI 0.7705").
   - Cox on PSI adjusted for host expression and any clinical covariates (numeric, categorical, strata), with gates,
     failure rules and every model term reported.
 - **Event panel.**
+  - Under the title, one line per event: what it is, in 1-based coordinates, and what its value measures.
   - Schematic: a collapsed gene model from a GTF (windowed for long genes) and nested snoRNAs.
   - Group view: matched pairs beside all samples.
   - KM with an at-risk table.
@@ -47,6 +49,8 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
   - Every Cox term, and the KM high/low split, gets a Schoenfeld test (`ph_p`, `cox_terms.ph_p`, `km_ph_p`).
   - A p below `ph_note_below` (0.05) adds a note to the model header, the KM header, `cox_notes` and `km_notes`,
     and to the probe report's "Notes on the survival tests". No result is removed.
+  - In the figures a dagger (†) marks each such test: after the KM log-rank p, the forest CI and the p of a model
+    row, with a legend entry.
 - **Guides.** [Reading the results, panel by panel](docs/reading-results.md) and
   [getting the annotation cache from SpliceImpactR](docs/annotation-cache.md).
   - `docs/make_figures.py` regenerates their figures and the README figure.
@@ -59,6 +63,15 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
 - **Outputs.** SVG, PDF and PNG, a CSV of every plotted value, and a provenance JSON. Outputs are byte-identical across
   runs.
 - **rMATS import.** Events with geometry, and PSI from IncLevel.
+- **HITindex import.** `import-hitindex` reads HITindex matrices of alternative first exons (AFE), last exons (ALE)
+  and the HIT index, with a GTF for strand and symbol.
+  - AFE and ALE are PSI.
+  - The HIT index (−1 to 1) has its own rules: no 0/1 check, a hit needs |Δ| > `hit_min_abs_delta` (0.20), and it
+    is labelled "HIT index" on the pages and in the reports.
+  - HIT-index events are left out of `analyse` and `probe` unless `--include-hit` (`include_hit=True`), because
+    there is one per exon; a HIT event named with `--event` is always analysed. They form q families of their own.
+  - `--append` (both importers) adds events to tables already in the folder.
+  - The synthetic example has a third gene, SYN3, with AFE, ALE and HIT events, and writes its HITindex matrices.
 - **Subsets.** `--keep FILE` runs any command on the listed patients only. TCGA barcodes are matched to their
   patients, and normals are kept.
   - Results tables keep their full column set when nothing was tested.
@@ -74,10 +87,13 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
   - `samples` may carry survival (wide `OS.time` + `OS`, …), clinical columns and `pair_id`.
   - `psi` may carry the event columns.
   - Separate tables still work and take precedence.
-- **Host-gene expression rows.** With an expression table, each page shows the host gene's own tumour vs normal,
-  KM on its median split, and Cox on expression + the clinical terms (HR per SD) for every cohort shown.
-  - `analyse_expression` computes the same statistics; the probe writes `expression_cells.csv`.
-  - `--no-gex` turns them off.
+- **Host-gene expression page.** With an expression table, the host gene gets one page of its own, drawn once after
+  its splicing pages so they do not repeat it (`expression_panel`).
+  - A forest of every cohort with a test (Δ expression, Cox HR per SD), then one row per cohort of the gene's pages:
+    tumour vs normal, KM, and Cox on expression + the clinical terms.
+  - `analyse_expression` computes the same statistics; the probe writes `expression_cells.csv` and
+    `pages/GENE_expression.png` (last in `probe.pdf`).
+  - `--no-gex` turns it off.
 - **`--top all`.** Probe pages and `panel` can show every cohort with a test. Long titles and file names are
   shortened.
 - **Protein consequences.** With a protein cache (`splice-assay protein-cache`, from a SpliceImpactR annotation
@@ -88,5 +104,5 @@ First version, released under GPL-3.0-only (as SpliceImpactR, whose transcript m
     command.
   - See docs/proteins.md.
 - **Command line.** `validate`, `analyse`, `panel`, `panels`, `probe`, `cox`, `proteins`, `protein-cache`, `example`,
-  `import-rmats` and `gtf-subset`.
+  `import-rmats`, `import-hitindex` and `gtf-subset`.
 - **Synthetic example.** A simulated dataset with a small GTF and clinical covariates.

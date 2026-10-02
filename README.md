@@ -4,13 +4,16 @@ Case-vs-reference and survival panels for alternative-splicing events, from plai
 
 Give it PSI values, a sample sheet, survival data and the coordinates of your events. For any event it computes:
 - tests between two groups (tumour vs normal, or any two groups you name), within patients and across all samples;
-- a median-split Kaplan–Meier test per cohort;
+- a Kaplan–Meier test per cohort, split at the median (or the mean, or a value you set);
 - a Cox model per cohort, adjusted for host-gene expression and any clinical variables you choose.
 
-It then draws one figure per event: the event on its gene, the group comparison, the survival curves, a forest of
-every cohort, and optionally the full Cox model of each cohort shown. With expression data, the host gene's own
-expression gets the same views (tumour vs normal, KM, Cox on expression + clinical). That is one "assay" figure per
-event.
+It then draws one figure per event: the event on its gene with its coordinates, the group comparison, the survival
+curves, a forest of every cohort, and optionally the full Cox model of each cohort shown. That is one "assay" figure
+per event. With expression data, the host gene's own expression gets a page of its own, drawn once per gene after
+its splicing pages, with the same views (tumour vs normal, KM, Cox on expression + clinical).
+
+Events can be rMATS types (SE, RI, A3SS, A5SS, MXE) or HITindex's alternative first and last exons and HIT index
+(AFE, ALE, HIT).
 
 ![Example panel](docs/example_panel.png)
 
@@ -44,13 +47,15 @@ to read Parquet. The command is `splice-assay` and the Python package is `splice
 ## Quick start
 
 ```bash
-splice-assay example demo/                     # simulated data, results and four figures
+splice-assay example demo/                     # simulated data, results and six figures
 splice-assay validate demo/data                # check your tables; per-cohort counts
 export SPLICE_ASSAY_GTF=demo/data/annotation.gtf
 export SPLICE_ASSAY_PROTEINS=demo/proteins     # optional: the suggested protein change on every page
 
 # not sure where to look? probe every event of a gene in every cohort: ranked, one page per event
 splice-assay probe demo/data --gene SYN1       # -> probe_SYN1_OS/report.md, probe.pdf, pages/
+splice-assay probe demo/data --gene SYN3       # HITindex events: alternative first/last exons (AFE, ALE)
+splice-assay probe demo/data --gene SYN3 --include-hit   # ... and the HIT index of each exon (left out by default)
 
 # one event: the most promising cohorts, OS, and models adjusted for age + sex + stage are the defaults
 splice-assay panel demo/data --event SYN1:SE:1 --out figures/
@@ -186,6 +191,8 @@ Coordinates are 0-based and half-open (BED and rMATS convention), written `start
 | `RI` | the two exons around the intron | the intron |
 | `A3SS`, `A5SS` | the short form of the alternative exon, and the flanking exon | the extension of the long form |
 | `MXE` | the two flanking exons | the exon PSI measures, then the other exon |
+| `AFE`, `ALE` | the gene's other first (last) exons, drawn grey (may be empty) | the first (last) exon whose use PSI measures |
+| `HIT` | empty | the exon whose HIT index is given |
 
 The junctions of both forms follow from these coordinates. For any other event type, give `psi_junctions` and
 `other_junctions` (introns as `donor-acceptor`) to draw arcs. Genes much longer than their events (over 3× and over
@@ -201,6 +208,29 @@ This writes `events.csv` (with geometry) and `psi.csv` (from `IncLevel1`/`IncLev
 With `--one-table` it writes one `psi.csv` holding the event columns and the PSI values. Add `samples.csv` to the
 same folder; survival and clinical columns can go in it, or in their own tables. For MXE events, PSI is taken to measure the transcript-upstream
 exon; see `splice_assay.rmats` and check one known event in your data.
+
+### From HITindex
+
+```bash
+splice-assay import-hitindex afe.csv ale.csv hit.csv --gtf gencode.gtf.gz --out my_data/ --append
+```
+
+Each matrix has one row per exon and one column per sample. The first column is HITindex's exon ID,
+`gene_id;chrom:start-end;afe` (or `ale`, `hit`), in its 1-based coordinates. A matrix assembled from HITindex's
+per-sample outputs looks like this; `splice-assay example` writes three in `demo/hitindex/`.
+- **The GTF** gives each gene's strand and symbol, which the IDs lack.
+- **Events** are named `GENE:AFE:0001`, numbered per gene and type from 5′ to 3′. `source_id` keeps the HITindex ID.
+- **`--gene`** keeps the listed genes (symbols or Ensembl IDs). The matrices are streamed, so a large file costs
+  little memory.
+- **`--append`** adds the events to the tables already in the folder (for example after `import-rmats`), in the
+  layout it finds there; an event ID already present is an error.
+- **Values.** AFE and ALE values are PSI: the exon's use among the gene's first (last) exons. The HIT index (−1 to 1)
+  is not PSI and has its own rules: no 0/1 check, and a hit needs |Δ| > 0.20 (`hit_min_abs_delta`). Pages say "HIT
+  index" where they would say PSI. See [docs/methods.md](docs/methods.md#event-types-and-their-values).
+- **The HIT index is left out by default.** HITindex reports it for every exon of every gene, a far larger set than
+  the splicing events, so `analyse` and `probe` skip HIT events unless `--include-hit` (`include_hit=True`). A HIT
+  event named with `--event` is always analysed and drawn. HIT-index events form q families of their own, so
+  including them changes no PSI q value.
 
 ## Probing: when you are not sure what to look at
 
@@ -219,7 +249,7 @@ It writes:
 | `events.csv` | One row per event, ranked: significant cohorts (adjusted, base, with directions), group hits, best cohort |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted, with BH q values within each gene |
 | `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame |
-| `pages/`, `probe.pdf` | One assay page per ranked event, and all of them in one PDF |
+| `pages/`, `probe.pdf` | One assay page per ranked event, then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF |
 
 Events measurable in at least one cohort come first. The ranking then orders events by these criteria in turn:
 1. cohorts where the adjusted Cox p < 0.05;
@@ -264,10 +294,12 @@ annotation, and checks against SpliceImpactR.
 | Adjustment | host expression, plus age, sex and stage found in the clinical table | `--covariate`, `--no-adjust`, `--no-detail` |
 | Baselines | stage I, female (a level with < 10 patients or no deaths joins its neighbour) | `--baseline stage=II`; settings `level_min_patients` |
 | Model notes | under 10 events per term; PSI IQR under 0.05 | settings `cox_events_per_term`, `narrow_psi_below` |
+| KM split | median | `--km-split mean` or `--km-split 0.5`; `--km-split-expression` for expression |
+| HIT-index events | left out of `analyse` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
-| Expression rows | shown when an expression table is given | `--no-gex` |
+| Expression page | one per gene, after its splicing pages, when an expression table is given | `--no-gex` |
 
 **How age, sex and stage are found.**
 - **Names.** Columns named like `age`, `age_at_diagnosis`, `sex`, `gender`, `stage` or `ajcc_pathologic_stage` are
@@ -285,7 +317,7 @@ annotation, and checks against SpliceImpactR.
   - fewer than 10 events per model term (an overfit risk);
   - a PSI IQR below 0.05 in the fit cohort, so the HR per IQR covers a few PSI points;
   - non-proportional hazards: a term's Schoenfeld test, or the KM split's, has p < 0.05, so the effect changes over
-    follow-up.
+    follow-up. Pages mark such tests with † after the p (KM, model rows) or the CI (forest).
 
   Settings `cox_events_per_term`, `narrow_psi_below`, `narrow_psi_measure` (`iqr` or `sd`) and `ph_note_below`
   control them.
@@ -330,20 +362,28 @@ Each splicing p value has a Benjamini–Hochberg q within its gene, with each ki
 - KM;
 - the Cox PSI term (per endpoint and model).
 
-The pages print q beside p and name the family in a footnote. Families of fewer than 10 tests get no q. Hit rules,
-filled markers and the probe ranking stay on p. Details: [docs/methods.md](docs/methods.md#multiple-testing-q-values).
+The pages print q beside p and name the family in a footnote. Families of fewer than 10 tests get no q. HIT-index
+events, when included, form families of their own. Hit rules, filled markers and the probe ranking stay on p. Details:
+[docs/methods.md](docs/methods.md#multiple-testing-q-values).
 
-## Host-gene expression rows
+## Host-gene expression page
 
-When an expression table is given, every page also shows the host gene's own expression for each cohort shown:
-- case vs reference (pairs and all samples);
-- a KM split at its median;
-- the Cox model OS ~ expression + the same clinical terms as the model rows (HR per SD).
+When an expression table is given, the host gene's own expression gets a page of its own. It is drawn once per gene,
+after the gene's splicing pages, so those pages do not repeat it:
+- a forest of every cohort with a test: Δ expression (case vs reference) and the Cox HR per SD, with the cohorts
+  drawn below shaded;
+- for each cohort drawn (those of the gene's splicing pages): case vs reference (pairs and all samples), a KM split
+  (median by default; `--km-split-expression`), and the Cox model OS ~ expression + the same clinical terms as the
+  model rows (HR per SD).
 
-This answers whether the gene's level itself is prognostic or shifted, next to the splicing result. The splicing
-models already adjust PSI for expression. The probe writes these statistics for every cohort to
-`expression_cells.csv`. `--no-gex` leaves the rows out. Expression comes from the expression table, matched by the
-event's `gene` (or `expression_gene`). Normals need values too for the case-vs-reference view.
+This answers whether the gene's level itself is prognostic or shifted, beside the splicing results. The splicing
+models already adjust PSI for expression.
+- **Where it goes.** `panel` writes it as `<GENE>_expression_<cohorts>_<endpoint>`. The probe writes
+  `pages/<GENE>_expression.png`, last in `probe.pdf`, and the statistics of every cohort to
+  `expression_cells.csv`.
+- **`--no-gex`** leaves it out.
+- **Matching.** Expression comes from the expression table, matched by the event's `gene` (or `expression_gene`).
+  Normals need values too for the case-vs-reference view.
 
 ## Outputs
 
@@ -377,15 +417,17 @@ Every threshold has a default taken from the analysis these figures were designe
 with a JSON file (`--settings my.json`) or in Python (`sa.Settings(min_pairs=5)`). The main defaults:
 
 - **Groups.** 10 pairs for the paired test; 10 case and 10 reference samples for the unpaired test. A hit needs
-  p < 0.05 and |Δ median PSI| > 0.10, and must be robust to PSI values of exactly 0 or 1.
+  p < 0.05 and |Δ median PSI| > 0.10, and must be robust to PSI values of exactly 0 or 1. For the HIT index, a hit
+  needs |Δ| > 0.20 and there is no 0/1 check.
 - **Survival.**
   - PSI observed in at least 50% of the survival samples, with at least 10 values away from the mode.
-  - KM: 10 patients per arm and 10 events.
+  - KM: split at the median (`km_split`: `median`, `mean` or a value), 10 patients per arm and 10 events.
   - Cox: 30 patients and 20 events.
 
 ## Scope and limits
 
-- **Figure scope.** One endpoint per figure, and one or two events of one gene.
+- **Figure scope.** One endpoint per figure, and one or two events of one gene, measured on one scale (PSI or HIT
+  index).
 - **p values.** Nominal. q values (Benjamini–Hochberg within each gene, one family per kind of test) are printed
   beside them; hits, filled markers and the probe ranking use p.
 - **Causality.** Cox models describe association; they do not establish causation.

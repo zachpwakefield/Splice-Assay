@@ -1,8 +1,8 @@
 # Methods
 
 Every number splice-assay prints or draws is defined here. The defaults are the settings in `Settings`; each
-threshold can be changed there. PSI is on a 0–1 scale, and every effect is case minus reference (for example
-tumour minus normal).
+threshold can be changed there. PSI is on a 0–1 scale, the HIT index on a −1 to 1 scale (see Event types), and every
+effect is case minus reference (for example tumour minus normal).
 
 ## Cohorts, groups and samples
 
@@ -16,6 +16,32 @@ tumour minus normal).
   must then be unique per patient and cohort).
 - **Endpoint cohort.** Survival samples whose patient has a valid survival row for the endpoint: time finite and
   greater than 0, event 0 or 1. Every endpoint is analysed and drawn separately.
+
+## Event types and their values
+
+| Type | Source | Value |
+|---|---|---|
+| SE, RI, A3SS, A5SS, MXE | rMATS (`import-rmats`) or your own table | PSI: inclusion of the event's variable region (SE exon, retained intron, long form, first MXE exon) |
+| AFE, ALE | HITindex (`import-hitindex`) | PSI: the use of this first (last) exon among the gene's first (last) exons |
+| HIT | HITindex (`import-hitindex`) | HIT index of the exon: −1 when it is used only as a first exon, 1 only as a last exon, about 0 when internal |
+
+- **AFE and ALE** are PSI and follow every PSI rule. Their schematic draws the gene's other first (last) exons in
+  grey.
+- **The HIT index is not PSI** and has its own rules (`analysis.event_settings`):
+  - values must lie in [−1, 1] (PSI must lie in [0, 1]);
+  - no robustness check at 0 or 1, because those are not boundary values here (its state is `not_applicable`);
+  - a hit needs |Δ| > `hit_min_abs_delta` (0.20) instead of `min_abs_delta`, because the index spans two units;
+  - the tests themselves are the same: signed-rank, Mann–Whitney, KM and Cox, with the HR per IQR of the HIT index;
+  - the narrow-range note uses the same `narrow_psi_below` on the HIT index's spread.
+- **Labels.** Pages, tables and reports say "HIT index" wherever they would say PSI (the Cox term is `HIT index`). A
+  page draws events of one quantity: a HIT event cannot share a page with a PSI event.
+- **Left out by default.** HITindex reports the HIT index for every exon of every gene, a far larger set than the
+  splicing events. `analyse` and `probe` therefore skip HIT events unless `include_hit` (`--include-hit`); a HIT
+  event named explicitly is always analysed.
+- **q families.** AFE and ALE events share their gene's PSI families. HIT-index events form families of their own
+  (the same kinds of test over the gene's HIT-index events), so including them changes no PSI q value.
+- **Event details.** Under each page's title, one line per event says what it is, in 1-based inclusive coordinates
+  (e.g. "cassette exon chr7:103,001–103,150 (150 nt) between exons …; PSI = its inclusion · plus strand").
 
 ## Case vs reference (per event and cohort)
 
@@ -59,8 +85,12 @@ tumour minus normal).
 - **Coverage gate.** Applied on the survival samples. PSI must be observed in at least `coverage_frac` (50%) of them,
   and at least `min_off_modal` (10) observed values must differ from the modal value. Otherwise neither test runs
   (`coverage_gate`).
-- **KM split.** The median PSI over the survival samples, fixed per cohort and shared by every endpoint.
-  - PSI ≤ median is the low arm; PSI > median is the high arm.
+- **KM split.** Set by `km_split` (`--km-split`): the median (default) or the mean of PSI over the survival
+  samples, or a value you give (e.g. 0.5). The split is fixed per cohort and shared by every endpoint.
+  - PSI ≤ the split is the low arm; PSI > the split is the high arm.
+  - A given value applies to every event and cohort. Where it leaves an arm below `km_min_group`, no log-rank test
+    runs.
+  - `km_split` in the tables is `median`, `mean` or `set`, and `cutoff` is the value.
   - The log-rank test needs `km_min_group` (10) patients per arm and `km_min_events` (10) events.
   - The log-rank HR is (O/E of the high arm) / (O/E of the low arm).
   - Bands are 95% log-log (exponential Greenwood) intervals. The at-risk table counts patients still followed at each
@@ -90,6 +120,8 @@ tumour minus normal).
     - `ph_p` is the PSI term's p; `cox_terms.ph_p` holds every term's.
     - The KM comparison gets the same test on a Cox model of the high-arm indicator (`km_ph_p`).
     - The tests are reported, never used to drop a result (see Notes on a fit).
+    - On the pages a dagger (†) follows each test whose p is below `ph_note_below` (0.05): the KM log-rank p, the
+      forest's CI and the p of each model row. The legend explains it.
   - `cox_terms` holds every term: coefficient, se, HR (per its unit), 95% CI and p.
 - **Low variance.** When SD(PSI) is below `low_psi_variance_sd` (0.002), neither test runs (`low_psi_variance`).
 - **Failed fits.** A fit is marked `failed` and reports no estimate when any of these occur: a lifelines convergence
@@ -112,10 +144,13 @@ Every p value for splicing gets a Benjamini–Hochberg q within its gene. Each k
 
 - **What counts.** Only tests that ran (status `tested`) are in a family. `*_q_tests` gives the family size. A family
   of fewer than `fdr_min_family` tests (default 10) gets no q.
+- **HIT index apart.** The tests of HIT-index events form families of their own, kind by kind, so including them
+  changes no PSI q value. A page's footnote says which events its families cover.
 - **Where q is shown.** The pages print q under or beside the p values: the tumour–normal titles, the KM header,
   and the Cox model headers. A footnote names the family.
-- **How the family is built.** `panel`, `panels` and `probe` analyse all of a gene's events so the family is the
-  whole gene; `analyse` uses the events it is given.
+- **How the family is built.** `panel` and `panels` analyse all of a gene's events of the page's kind (PSI events,
+  or HIT-index events), and `probe` all of the gene's events it probes, so the family is the whole gene; `analyse`
+  uses the events it is given.
 - **What stays on p.** The hit rules, the forest's filled markers and the probe's ranking use p, as in the screen.
   q is reported beside p.
 - **Not adjusted.** Host-gene expression statistics.
@@ -126,18 +161,19 @@ Every p value for splicing gets a Benjamini–Hochberg q within its gene. Each k
 ## Host-gene expression (per gene, cohort and endpoint)
 
 With an expression table, the host gene's own expression gets the same three analyses as PSI (`analyse_expression`;
-the expression rows of each page; the probe's `expression_cells.csv`).
+the gene's expression page; the probe's `expression_cells.csv`).
 - **Case vs reference.** The same paired signed-rank and Mann–Whitney tests and composition diagnostics, on the
   expression table's scale.
   - There is no 0/1 robustness check, because that is specific to PSI.
   - A hit needs |Δ median| > `gex_min_abs_delta`: 1.0 by default, which is two-fold on a log2 scale.
-- **KM.** A median split of expression over the cohort's survival samples (expression ≤ cut is the low arm), with the
-  same coverage and size gates as PSI.
+- **KM.** A split of expression over the cohort's survival samples (expression ≤ the split is the low arm), with the
+  same coverage and size gates as PSI. The split is set by `km_split_expression` (`--km-split-expression`): the
+  median (default), the mean, or a value on the expression table's scale.
 - **Cox.** h(t) = h0(t) exp(b · z(expression) + clinical terms). The clinical terms and strata are those of the
   page's model rows (by default age, sex and stage), with the same completeness rule. The HR is per SD of
   expression in the fit cohort. Status `constant_expression` when expression does not vary.
-- **Interpretation.** The splicing models already adjust PSI for expression. The expression rows show whether the
-  gene's level itself goes with survival or differs between the groups, beside the splicing result.
+- **Interpretation.** The splicing models already adjust PSI for expression. The expression page shows whether the
+  gene's level itself goes with survival or differs between the groups, beside the splicing results.
 
 ## Default clinical adjustment and the probe
 
@@ -177,6 +213,8 @@ the expression rows of each page; the probe's `expression_cells.csv`).
 
 ## The figures
 
+- **Title and event details.** The title names the gene, the events, the cohorts and the endpoint. Under it, one
+  line per event gives its details (see Event types).
 - **Event panel: schematic.**
   - **Collapsed gene model.** Built from the host gene's GTF transcripts that have at least 2 exons, excluding
     `retained_intron`.
@@ -197,8 +235,12 @@ the expression rows of each page; the probe's `expression_cells.csv`).
   - Otherwise: all samples, with the reason there is no paired test.
   - With no reference samples in the cohort: the reason only.
   - With no reference samples anywhere in the data: no group view.
-- **Event panel: KM.** The split, bands, censoring ticks and the at-risk table. The log-rank HR, p and events are
-  printed above the axes.
+- **Event panel: KM.** The split, bands, censoring ticks and the at-risk table. Above the axes:
+  - the split, e.g. "split at median PSI 0.7705" or "split at PSI 0.5 (set)";
+  - the log-rank HR and p (with † for non-proportional hazards);
+  - q, when the family is large enough;
+  - the events per arm;
+  - with †, a last line giving the proportional-hazards p.
 - **Event panel: forest.** One row per cohort where a plotted event had a tested comparison or a Cox fit, plus the
   cohorts shown at left.
   - Left: the paired Δ (filled) and unpaired Δ (open).
@@ -215,6 +257,14 @@ the expression rows of each page; the probe's `expression_cells.csv`).
   - A cell whose model could not be fitted shows the reason.
 - **Cox model figure.** Every term of one cell's model, with HR, 95% CI and p. PSI is shown per IQR; host expression
   and numeric covariates per SD; categories against their baseline level.
+- **Expression page.** The host gene's expression is drawn once per gene, after its splicing pages, so the splicing
+  pages do not repeat it.
+  - At the top, a forest of every cohort with an expression test: Δ of expression (left) and the Cox HR per SD
+    (right). The cohorts drawn below are shaded.
+  - Then one row per cohort drawn: the group view, the KM split and the Cox model of expression plus the page's
+    clinical terms.
+  - `panel` and `probe` draw the cohorts of the gene's splicing pages (their union in a probe). `--no-gex` leaves the
+    page out.
 
 ## Reproducibility
 

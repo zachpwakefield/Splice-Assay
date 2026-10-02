@@ -50,6 +50,14 @@ Put the tables in one folder: `samples`, `psi`, `events`, `survival`, and option
   - Effects are case minus reference.
 - **rMATS output:** `splice-assay import-rmats` writes `events.csv` and `psi.csv`, or, with `--one-table`, a
   single `psi.csv` holding both.
+- **HITindex output** (alternative first and last exons, HIT index): `splice-assay import-hitindex afe.csv ale.csv
+  hit.csv --gtf GTF --out DATA --append` adds them beside the rMATS events. The GTF supplies the strand, which the
+  HITindex IDs lack.
+  - AFE and ALE values are PSI.
+  - The HIT index (−1 to 1) is not PSI: it has no 0/1 check, and a hit needs |Δ| > 0.20. Say "HIT index", not PSI,
+    when reporting it.
+  - `analyse` and `probe` leave HIT events out unless `--include-hit`: there is one per exon, a far larger set. A
+    HIT event named with `--event` is always analysed. HIT-index q values come from families of their own.
 
 Then validate, and read the whole output:
 
@@ -121,12 +129,15 @@ under "Notes on the survival tests". Each is a reason for caution, not a failed 
   the Schoenfeld test says the hazard ratio changes over follow-up, so the HR or log-rank result is an average.
   Look at the KM curves; crossing curves are the usual cause. `cells.csv` holds every test's p (`ph_p`,
   `adj_ph_p`, `km_ph_p`).
+  - In the figures a † follows each such test: the KM log-rank p, the forest CI, and the p of a model row.
 
 ### Host-gene expression
 
-With an expression table, every page also has expression rows for the host gene, and the probe writes
-`expression_cells.csv`. The rows hold tumour vs normal, KM on the median split, and Cox on expression + age + sex +
-stage, with the HR per SD.
+With an expression table, the host gene's expression has a page of its own, drawn once per gene after the splicing
+pages (`pages/GENE_expression.png`, last in `probe.pdf`), and the probe writes `expression_cells.csv`.
+- At the top, a forest of every cohort: Δ expression and the Cox HR per SD.
+- Below it, one row per cohort of the gene's splicing pages: tumour vs normal, KM (median split by default), and
+  Cox on expression + age + sex + stage, with the HR per SD.
 
 Use them when judging an event:
 - **Probably an expression echo:** a splicing association in a cohort where expression itself is equally
@@ -182,6 +193,12 @@ splice-assay panel DATA --event EVENT_ID [--cohort A --cohort B ...] [--gtf ...]
   - model rows with age + sex + stage found in the clinical table (`--no-detail` for none).
 - **Layout.** With three or more cohorts the page stacks: one row per cohort (comparison, KM, model), and the forest
   of every cohort below.
+- **What the page says about the event.** Under the title, one line per event gives what it is (type, exon or
+  intron, 1-based coordinates, length, strand) and what its value measures. Check it against the event you meant.
+- **KM split.** The median by default; the KM header says where it fell ("split at median PSI 0.7705"). Use
+  `--km-split mean` or `--km-split 0.3` (a set value) only for a stated reason, and say so when reporting.
+- **Expression page.** `panel` also writes `<GENE>_expression_<cohorts>_<endpoint>` for the same cohorts
+  (`--no-gex` leaves it out).
 - **Many cohorts.** More than 6 are split over pages (`_p1`, `_p2`, …), each with the full forest; set
   `cohorts_per_page` to change this.
 - **Explicit models.** `--detail-covariate COL` (repeatable), `--detail-strata COL`, `--baseline COL=LEVEL`.
@@ -229,7 +246,10 @@ splice-assay panel DATA --event EVENT_ID [--cohort A --cohort B ...] [--gtf ...]
 | Tests | 10 pairs; 10 per group; KM 10 per arm and 10 events; Cox 30 patients and 20 events | `--settings file.json` |
 | GTF | none (no gene track) | `--gtf` or `$SPLICE_ASSAY_GTF` |
 | Protein cache | none (no protein band) | `--proteins` or `$SPLICE_ASSAY_PROTEINS` |
-| Expression rows | on when expression is given | `--no-gex` |
+| KM split | median | `--km-split mean` or a value; `--km-split-expression` |
+| HIT-index events | left out of `analyse` and `probe` | `--include-hit`, or `--event` for one |
+| HIT-index hit | \|Δ\| > 0.20, no 0/1 check | settings `hit_min_abs_delta` |
+| Expression page | on when expression is given (one per gene, last) | `--no-gex` |
 
 ## Pitfalls
 

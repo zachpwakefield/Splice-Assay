@@ -1,7 +1,8 @@
 # Reading the results, panel by panel
 
-A probe writes a report, an overview and one assay page per ranked event. `panel` draws the same page for the
-cohorts you choose. This guide walks through one page from top to bottom, then the probe's files.
+A probe writes a report, an overview, one assay page per ranked event and the host gene's expression page. `panel`
+draws the same pages for the cohorts you choose. This guide walks through one assay page from top to bottom, then the
+expression page and the probe's files.
 
 The figures come from the synthetic example, so you can open the same files: run `splice-assay example demo/`, then
 `splice-assay probe demo/data --gene SYN1 --gtf demo/data/annotation.gtf --proteins demo/proteins`. The cohorts are
@@ -19,6 +20,9 @@ three cohorts:
 
 - **Title.** Gene, event, the cohorts drawn and the endpoint. A subset (`--keep`, `--where`) and "page i of n" for a
   split page are added at the end.
+- **Event details.** One line per event under the title: what the event is, its coordinates (1-based, inclusive, as a
+  genome browser shows them), its length, what its value measures and the strand. Check it against the event you
+  meant to look at.
 - **Gene track.** The gene's collapsed model from the GTF: exons used by at least 10% of its transcripts. Nested small
   RNAs (snoRNAs, scaRNAs) are drawn in black underneath.
 - **Event row.**
@@ -26,6 +30,11 @@ three cohorts:
   - The coloured block is the region PSI measures, coloured by event type, with its length above.
   - Arcs above are the junctions of the form PSI counts; arcs below belong to the other form.
   - "PSI = inclusion" (or retention, …) says which form a high PSI means.
+- **HITindex events.** For an alternative first or last exon (AFE, ALE), the grey blocks are the gene's other first
+  or last exons and PSI is this exon's share of them. For a HIT event the value is the HIT index, from −1 (used as a
+  first exon) to 1 (used as a last exon); the page says "HIT index" wherever it would say PSI, and its axes run
+  from −1 to 1. HIT events appear only when asked for (`--include-hit`, or an event named with `--event`), and the
+  footnote's q families then cover the gene's HIT-index events only.
 
 ### 2. Protein band (with a protein cache)
 
@@ -57,12 +66,14 @@ three cohorts:
 - **Hits and q.** A design is a hit when p < 0.05, |Δ| > 0.10, the Hodges–Lehmann shift agrees in sign, and the result
   survives dropping PSI values of exactly 0 or 1. A q line appears when the gene has at least 10 such tests.
 
-**Middle: Kaplan–Meier.** The cohort is split at the median PSI of its survival samples; PSI at or below the median is
-the low arm.
-- **Header.** The log-rank HR (high vs low) and p, q, events per arm, and the split value.
+**Middle: Kaplan–Meier.** The cohort is split at the median PSI of its survival samples (or the mean, or a value set
+with `--km-split`); PSI at or below the split is the low arm.
+- **Header.**
+  - The split: "split at median PSI 0.7705", or "split at PSI 0.5 (set)" for a value you gave.
+  - The log-rank HR (high vs low) and p, then q and the events per arm.
 - **Curves.** 95% bands, with ticks for censored patients. The at-risk table counts patients still followed.
-- **Possible last line:** "non-proportional hazards (p …)". The hazard ratio between the arms changes over follow-up,
-  for example when the curves cross. The log-rank test still ran; it averages that change.
+- **A † after the log-rank p**, with a last line "† non-proportional hazards (p …)": the hazard ratio between the arms
+  changes over follow-up, for example when the curves cross. The log-rank test still ran; it averages that change.
 
 **Right: the Cox model** of this cohort, adjusted for host expression and the clinical terms (by default age, sex and
 stage).
@@ -72,6 +83,8 @@ stage).
   - PSI is per IQR of PSI in this cohort (bold, diamond). Host expression and age are per SD. Categories are against
     the reference level named.
   - Filled markers have p < 0.05.
+  - A † after a row's p: that term failed the proportional-hazards test (p < 0.05), so its HR is an average over
+    follow-up.
 
 ### 4. When a cohort cannot be fully tested, and model notes
 
@@ -102,29 +115,36 @@ stage).
   axis), so all cohorts are compared under one model.
   - Filled diamonds have p < 0.05.
   - Arrowheads mark a CI that runs off the axis.
+  - A † after a CI: the PSI term of that fit failed the proportional-hazards test.
 - **Shading** marks the cohorts drawn above. Look for the same direction across cohorts.
 
-### 6. Host-gene expression
+### 6. Legend and footnote
 
-![Host-gene expression](reading/06_expression.png)
+![Legend and footnote](reading/06_legend_footnote.png)
 
-The same three views for the host gene's own expression (needs an expression table):
-- **Tumour vs normal.** A hit needs a two-fold change (|Δ| > 1 on a log2 scale).
-- **KM.** The split is at median expression.
-- **Cox.** Expression per SD plus the same clinical terms.
+- **The legend** covers every symbol on the page. When the page carries a †, the legend adds "† non-proportional
+  hazards (p < 0.05)".
+- **The footnote** names the q families with their sizes (Benjamini–Hochberg within the gene, one family per kind of
+  test) and lists any setting changed from the defaults. A page from relaxed gates always says so.
 
-These results are not FDR-adjusted. Read them beside the splicing rows:
+## The expression page
+
+![The expression page](reading/07_expression_page.png)
+
+With an expression table, the host gene's own expression has a page of its own. A probe puts it last
+(`pages/SYN1_expression.png`), and `panel` writes it beside the event page (`SYN1_expression_…`), so the splicing
+pages do not repeat it.
+- **The forest** at the top covers every cohort with an expression test. Left: Δ median expression (tumour − normal).
+  Right: the Cox HR per SD of expression. The cohorts drawn below are shaded.
+- **One row per cohort** of the gene's splicing pages, with the same three views:
+  - **Tumour vs normal.** A hit needs a two-fold change (|Δ| > 1 on a log2 scale).
+  - **KM.** The split is at the median expression by default (`--km-split-expression`), and the header says where.
+  - **Cox.** Expression per SD plus the same clinical terms.
+
+These results are not FDR-adjusted. Read them beside the splicing pages:
 - a splicing association where expression itself is not prognostic is easier to interpret;
 - one where expression is equally prognostic may be an expression echo. The splicing model adjusts for expression,
   so check that the PSI term holds there.
-
-### 7. Legend and footnote
-
-![Legend and footnote](reading/07_legend_footnote.png)
-
-- **The legend** covers every symbol on the page.
-- **The footnote** names the q families with their sizes (Benjamini–Hochberg within the gene, one family per kind of
-  test) and lists any setting changed from the defaults. A page from relaxed gates always says so.
 
 ## The probe's files
 
@@ -136,14 +156,14 @@ These results are not FDR-adjusted. Read them beside the splicing rows:
 | How much is chance | For each model and KM: tests run, how many have p < 0.05, and how many chance alone would give |
 | Notes on the survival tests | How many fits carry each note (narrow PSI range, overfit risk, non-proportional hazards), naming the flagged fits with p < 0.05 |
 | Ranked events | One row per event with its counts, best cohort, HR, p, the suggested protein change and a link to its page |
-| Protein changes, Host-gene expression | What the suggestions and the expression rows are, and where to find them |
+| Protein changes, Host-gene expression | What the suggestions and the expression page are, and where to find them |
 | Files, Reproduce | The outputs, and the exact command that made them |
 
 ### overview.png: every event and cohort at once
 
 ![Probe overview](reading/08_overview.png)
 
-- **Colour** is the HR per IQR of PSI, from the adjusted model where it was fitted.
+- **Colour** is the HR per IQR of PSI (of the HIT index for HIT events), from the adjusted model where it was fitted.
 - **A dot** is p < 0.05 (a large dot p < 0.01). A frame marks a tumour–normal hit. Grey cells were not tested.
 - **Rows** follow the ranking.
 
@@ -162,10 +182,12 @@ These results are not FDR-adjusted. Read them beside the splicing rows:
 1. **In `report.md`**, compare the p < 0.05 counts with what chance gives, then read the notes section.
 2. **Open the pages** of the top-ranked events.
 3. **On each page:**
+   - **Details line:** is this the event you meant?
    - **Group view:** is there a tumour–normal change, and does it hold within patients?
-   - **KM:** do the curves separate steadily, or do they cross?
+   - **KM:** do the curves separate steadily, or do they cross (a †)?
    - **Model:** does the PSI term hold with the clinical terms, and does the header carry notes?
    - **Forest:** do the other cohorts point the same way?
-   - **Expression:** could this be an expression echo?
-4. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
+4. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
+   cohorts? Where expression is equally prognostic, a splicing association could be an expression echo.
+5. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
    and an association that survives adjustment. One small p is not. Everything a probe prints is nominal.
