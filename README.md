@@ -31,24 +31,46 @@ Events can be rMATS types (SE, RI, A3SS, A5SS, MXE) or HITindex's alternative fi
 
 ## Install
 
+splice-assay is on [PyPI](https://pypi.org/project/splice-assay/) and needs Python 3.10 or newer. A virtual
+environment keeps it apart from your other projects:
+
 ```bash
+python3 -m venv splice-env
+source splice-env/bin/activate
 pip install splice-assay
 ```
 
-The latest code on GitHub:
+`splice-assay --version` checks the install, and `splice-assay example demo/` builds simulated data to try it on
+(see the quick start below). The dependencies (numpy, pandas, scipy, matplotlib and lifelines) come with it.
+
+To read Parquet tables, add pyarrow (CSV and TSV need nothing extra):
+
+```bash
+pip install "splice-assay[parquet]"
+```
+
+To update to a new release:
+
+```bash
+pip install --upgrade splice-assay
+```
+
+Changes on GitHub that are not yet released:
 
 ```bash
 pip install "splice-assay @ git+https://github.com/zachpwakefield/Splice-Assay"
 ```
 
-Or, from a clone:
+To develop or run the tests, install from a clone:
 
 ```bash
+git clone https://github.com/zachpwakefield/Splice-Assay
+cd Splice-Assay
 pip install -e ".[test]"
+pytest
 ```
 
-Python 3.10 or newer is required. The dependencies are numpy, pandas, scipy, matplotlib and lifelines; add `pyarrow`
-to read Parquet. The command is `splice-assay` and the Python package is `splice_assay`.
+The command is `splice-assay` and the Python package is `splice_assay`.
 
 ## Quick start
 
