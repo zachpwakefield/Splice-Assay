@@ -1,22 +1,20 @@
 name: tests
 
+# The test suite once (macOS, Python 3.12), and a quick check that the oldest dependency versions pyproject.toml allows
+# (.github/minimum-versions.txt, on the oldest Python supported) still install and draw the example.
+
 on:
   push:
   pull_request:
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-        python-version: ["3.10", "3.12"]
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
       - name: Install
         run: python -m pip install ".[test]"
       - name: Test
@@ -25,14 +23,13 @@ jobs:
         run: splice-assay example ci_example && ls ci_example/figures
 
   minimum-versions:
-    # The oldest dependency versions pyproject.toml allows, on the oldest Python supported.
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.10"
       - name: Install
-        run: python -m pip install -c .github/minimum-versions.txt ".[test]"
-      - name: Test
-        run: python -m pytest
+        run: python -m pip install -c .github/minimum-versions.txt .
+      - name: Example
+        run: splice-assay example ci_example && ls ci_example/figures

@@ -309,8 +309,8 @@ splice-assay panel DATA --event EVENT_ID --out OUT [--cohort A --cohort B ...] [
 - **Figures.** Figure code must stay deterministic (byte-identical outputs are tested). `docs/make_figures.py`
   regenerates the README figure and the reading guide's crops.
 - **Commits.** Commits are authored by the maintainer only: do not add AI co-author trailers or attribution.
-- **Dependency floors.** `.github/minimum-versions.txt` pins the oldest versions `pyproject.toml` allows; CI tests
-  them on Python 3.10. Change both together.
+- **Dependency floors.** `.github/minimum-versions.txt` pins the oldest versions `pyproject.toml` allows; CI checks
+  that they install and draw the example on Python 3.10 (the test suite runs on Python 3.12). Change both together.
 - **Releases.** Bump `src/splice_assay/_version.py` and `CHANGELOG.md`, tag `vX.Y.Z` on `main`, then publish a
-  GitHub release from the tag: `.github/workflows/publish.yml` tests the built wheel (newest and minimum
-  dependencies) and only then uploads it to PyPI. "Run workflow" in the Actions tab rehearses the upload on TestPyPI.
+  GitHub release from the tag: `.github/workflows/publish.yml` builds the package, checks that the wheel installs and
+  draws the example, and uploads it to PyPI. "Run workflow" in the Actions tab rehearses the upload on TestPyPI.

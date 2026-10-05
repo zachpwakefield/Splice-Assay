@@ -88,9 +88,10 @@
   - Protein changes: a region holding the stop codon (the three nucleotides after the last coding one) is not
     called 3′ UTR; identical proteins from a coding event are not said to lie outside the coding sequence.
   - The gene-track warning gives the real reason when one transcript is not enough for the collapsed model.
-- **Packaging.** `lifelines>=0.29.0` (0.27.8 and 0.28 fail to import with SciPy ≥ 1.14) and `pandas>=2.1`. CI tests
-  the minimum versions (`.github/minimum-versions.txt`); the publish workflow tests the built wheel, with the newest
-  and the minimum versions, before uploading.
+- **Packaging.** `lifelines>=0.29.0` (0.27.8 and 0.28 fail to import with SciPy ≥ 1.14) and `pandas>=2.1`. CI runs
+  the tests on macOS (Python 3.12) and checks that the minimum versions (`.github/minimum-versions.txt`, Python 3.10)
+  install and draw the example; the publish workflow checks that the built wheel installs and draws the example
+  before uploading.
 - **Docs.** The panel and `cox` examples name `--out` and `--endpoint`; page suffixes and the stacked layout's rule
   are described as they are. The agent guide asks to compare `adj_cox_n` with `cox_n` before reading a change in p
   after adjustment.
