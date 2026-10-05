@@ -101,12 +101,12 @@ def test_import_cli(tmp_path, capsys, monkeypatch):
 def test_hit_index_has_its_own_rules(tables):
     """HIT values may be negative; no 0/1 robustness check; a hit needs |delta| > hit_min_abs_delta (0.20)."""
     ds = sa.Dataset.from_tables(**tables)
-    g = sa.analyse(ds, events=["SYN3:HIT:0001"]).groups.set_index("cohort").loc["COH1"]
+    g = sa.analyze(ds, events=["SYN3:HIT:0001"]).groups.set_index("cohort").loc["COH1"]
     assert g.paired_hit_status == "hit" and g.paired_state_01 == "not_applicable" and g.paired_delta_median > 0.2
-    strict = sa.analyse(ds, events=["SYN3:HIT:0001"], settings=sa.Settings(hit_min_abs_delta=0.5))
+    strict = sa.analyze(ds, events=["SYN3:HIT:0001"], settings=sa.Settings(hit_min_abs_delta=0.5))
     assert strict.groups.set_index("cohort").at["COH1", "paired_hit_status"] == "small_effect"
-    sv = sa.analyse(ds, events=["SYN3:HIT:0002"], endpoints=["OS"])
-    assert (sv.cox_terms.term.eq("HIT index") & sv.cox_terms.kind.eq("psi_iqr")).any()
+    sv = sa.analyze(ds, events=["SYN3:HIT:0002"], endpoints=["OS"])
+    assert (sv.cox_terms.term.eq("HIT index") & sv.cox_terms.kind.eq("psi_sd")).any()
     assert sv.survival.cox_model.str.startswith("HIT index +").all()
     bad = tables["psi"].copy()
     bad.loc[bad.event_id.eq("SYN3:HIT:0001"), "psi"] = 1.5
@@ -133,7 +133,7 @@ def test_hit_and_afe_pages(tables, tmp_path):
 
 
 def test_hit_is_left_out_unless_asked(tables, tmp_path, capsys):
-    """analyse and probe leave out HIT-index events unless include_hit; a HIT event named explicitly is analysed, with
+    """analyze and probe leave out HIT-index events unless include_hit; a HIT event named explicitly is analyzed, with
     its gene's HIT events as its q family."""
     from splice_assay.probe import probe, select_events
     ds = sa.Dataset.from_tables(**tables)
@@ -145,12 +145,12 @@ def test_hit_is_left_out_unless_asked(tables, tmp_path, capsys):
     with pytest.raises(InputError, match="only HIT-index events for SYN3: add --include-hit"):
         select_events(only, genes=["SYN3"])
     with pytest.raises(InputError, match="only HIT-index events in the data"):
-        sa.analyse(only)
-    assert set(sa.analyse(only, include_hit=True, endpoints=["OS"], cohorts=["COH1"]).groups.event_id) == set(hits)
+        sa.analyze(only)
+    assert set(sa.analyze(only, include_hit=True, endpoints=["OS"], cohorts=["COH1"]).groups.event_id) == set(hits)
     res = probe(ds, genes=["SYN3"], settings=FAST, adjusted=None, out_dir=tmp_path / "p", max_pages=1,
                 include_hit=True, log=lambda *_: None)
     assert len(res.events) == 6 and "HIT-index events form families of their own" in res.paths["report"].read_text()
-    plain = sa.analyse(ds, endpoints=["OS"], cohorts=["COH1"])
+    plain = sa.analyze(ds, endpoints=["OS"], cohorts=["COH1"])
     with pytest.raises(InputError, match="include_hit=True"):
         sa.event_panel(ds, hits[1], ["COH1"], "OS", results=plain, settings=FAST)
     texts = (lambda p: " ".join(t.get_text() for t in p.figure.texts))
@@ -163,9 +163,52 @@ def test_hit_is_left_out_unless_asked(tables, tmp_path, capsys):
     example.write(tmp_path / "ex")
     data = str(tmp_path / "ex" / "data")
     assert main(["validate", data]) == 0
-    assert "note: 2 HIT-index event(s); analyse and probe leave them out unless --include-hit" in capsys.readouterr().out
+    assert "note: 2 HIT-index event(s); analyze and probe leave them out unless --include-hit" in capsys.readouterr().out
     for flag, n in (([], 0), (["--include-hit"], 2)):
-        assert main(["analyse", data, "--out", str(tmp_path / f"a{n}"), "--cohort", "COH1", "--endpoint", "OS",
+        assert main(["analyze", data, "--out", str(tmp_path / f"a{n}"), "--cohort", "COH1", "--endpoint", "OS",
                      *flag]) == 0
         sv = pd.read_csv(tmp_path / f"a{n}" / "survival.csv")
         assert sv.event_id.str.contains(":HIT:").sum() == n
+
+
+def _dup_symbol(tmp_path):
+    """A GTF whose symbol DUP names two genes (chr1, plus strand; chr5, minus strand) and their AFE matrix."""
+    gtf = tmp_path / "a.gtf"
+    gtf.write_text('chr1\tx\tgene\t1000\t5000\t.\t+\t.\tgene_id "ENSG00000000001.3"; gene_name "DUP";\n'
+                   'chr5\tx\tgene\t90000\t99000\t.\t-\t.\tgene_id "ENSG00000000002.1"; gene_name "DUP";\n')
+    rows = ["ENSG00000000001.3;chr1:1000-1100;afe,0.4,0.5", "ENSG00000000001.3;chr1:1500-1600;afe,0.6,0.5",
+            "ENSG00000000002.1;chr5:98000-99000;afe,0.3,0.2", "ENSG00000000002.1;chr5:95000-95100;afe,0.7,0.8"]
+    (tmp_path / "afe.csv").write_text("id,s1,s2\n" + "\n".join(rows) + "\n")
+    quoted = ['"' + r.split(",", 1)[0] + '",' + r.split(",", 1)[1] for r in rows]       # as R's write.csv writes it
+    (tmp_path / "afe_quoted.csv").write_text('"","s1","s2"\n' + "\n".join(quoted) + "\n")
+    return gtf
+
+
+def test_one_symbol_naming_two_genes(tmp_path):
+    """Each gene is ordered 5' to 3' on its own strand and lists only its own other first exons; the numbering
+    continues across them, so the IDs stay unique."""
+    gtf = _dup_symbol(tmp_path)
+    ev, _ = import_hitindex(tmp_path / "afe.csv", gtf)
+    ev = ev.set_index("event_id")
+    assert list(ev.index) == ["DUP:AFE:0001", "DUP:AFE:0002", "DUP:AFE:0003", "DUP:AFE:0004"]
+    assert ev.loc["DUP:AFE:0001", ["chrom", "variable", "constant"]].tolist() == ["chr1", "999-1100", "1499-1600"]
+    assert ev.loc["DUP:AFE:0003", ["chrom", "variable", "constant"]].tolist() == ["chr5", "97999-99000",
+                                                                                  "94999-95100"]   # minus: 5' first
+    assert ev.loc["DUP:AFE:0004", "constant"] == "97999-99000"
+
+
+def test_the_gene_filter_reads_quoted_ids(tmp_path):
+    gtf = _dup_symbol(tmp_path)
+    for f in ("afe.csv", "afe_quoted.csv"):
+        ev, psi = import_hitindex(tmp_path / f, gtf, genes=["ENSG00000000001"])
+        assert list(ev.event_id) == ["DUP:AFE:0001", "DUP:AFE:0002"] and len(psi) == 4
+
+
+def test_model_descriptions_name_the_hit_index(ds):
+    """A HIT-index event's model is described as fitted, with the HIT index named in the penalty label too."""
+    from splice_assay.analysis import describe_model
+    s = sa.Settings(cox_ridge="molecular")
+    want = "HIT index + host expression; ridge λ 1 (HIT index and host expression)"
+    assert describe_model(sa.CoxModel(), ds, ["SYN3:HIT:0001"], s) == want
+    r = sa.analyze(ds, events=["SYN3:HIT:0001"], endpoints=["OS"], cohorts=["COH1"], settings=s)
+    assert r.survival.cox_model.iloc[0] == want

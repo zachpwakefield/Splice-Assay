@@ -1,6 +1,7 @@
 name: publish
 
-# Builds the wheel and source archive and uploads them with PyPI's trusted publishing (no stored token).
+# Builds the wheel and source archive, tests the wheel, and uploads them with PyPI's trusted publishing (no stored
+# token). Nothing is uploaded unless the tests pass.
 # - "Run workflow" in the Actions tab uploads to TestPyPI, as a rehearsal.
 # - Publishing a GitHub release (from a tag such as v0.1.0) uploads to PyPI; the tag must match the version.
 
@@ -31,9 +32,40 @@ jobs:
           name: dist
           path: dist/
 
+  test:
+    # The wheel that would be uploaded, installed on its own (the checkout supplies only the tests): with the newest
+    # dependencies, and with the oldest ones pyproject.toml allows.
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python-version: "3.10"
+            constraints: ""
+          - python-version: "3.12"
+            constraints: ""
+          - python-version: "3.10"
+            constraints: "-c .github/minimum-versions.txt"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - name: Install the wheel
+        run: python -m pip install ${{ matrix.constraints }} "$(ls dist/*.whl)[test]"
+      - name: Test
+        run: python -m pytest
+      - name: Example
+        run: splice-assay example ci_example && ls ci_example/figures
+
   testpypi:
     if: github.event_name == 'workflow_dispatch'
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
@@ -49,7 +81,7 @@ jobs:
 
   pypi:
     if: github.event_name == 'release'
-    needs: build
+    needs: [build, test]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:

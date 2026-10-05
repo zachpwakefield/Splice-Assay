@@ -1,12 +1,15 @@
 """Run the statistics for every event x cohort (case vs reference) and event x cohort x endpoint (survival)."""
 from __future__ import annotations
 
+import json
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
+from ._version import __version__
 from .config import Settings
 from .dataset import Dataset, InputError
 from .events import opt_in, quantity
@@ -17,7 +20,8 @@ from .stats.tissue import compare_groups
 # ============================================================================================ designs
 @dataclass
 class GroupDesign:
-    """Sample IDs per cohort: pairs (case and reference, aligned), all case and all reference samples."""
+    """Sample IDs per cohort: pairs (case and reference, aligned), all case and all reference samples, and the
+    patient of each of these (the unpaired design compares one value per patient)."""
 
     cohorts: dict
 
@@ -27,10 +31,17 @@ class GroupDesign:
         for c in ds.cohorts:
             s = ds.samples[ds.samples.cohort.eq(c)]
             p = ds.pairs[ds.pairs.cohort.eq(c)]
+            case, ref = s.role.eq("case"), s.role.eq("reference")
             out[c] = dict(pair_c=p.case_sample.to_numpy(), pair_r=p.reference_sample.to_numpy(),
-                          cases=s.sample_id[s.role.eq("case")].to_numpy(),
-                          refs=s.sample_id[s.role.eq("reference")].to_numpy())
+                          cases=s.sample_id[case].to_numpy(), refs=s.sample_id[ref].to_numpy(),
+                          case_patients=s.patient_id[case].to_numpy(), ref_patients=s.patient_id[ref].to_numpy())
         return cls(out)
+
+    def compare(self, values, cohort: str, settings: Settings) -> dict:
+        """compare_groups of one value series (PSI, or expression) in one cohort."""
+        d = self.cohorts[cohort]
+        return compare_groups(values, d["pair_c"], d["pair_r"], d["cases"], d["refs"], settings,
+                              d["case_patients"], d["ref_patients"])
 
 
 @dataclass
@@ -64,6 +75,9 @@ class SurvivalDesign:
 
 
 # ============================================================================================ results
+ANALYSIS_JSON = "analysis.json"
+
+
 @dataclass
 class Results:
     """groups: one row per event x cohort; survival: one row per event x cohort x endpoint; cox_terms: one row per
@@ -82,20 +96,36 @@ class Results:
         return self.survival.merge(self.groups, on=["event_id", "gene", "cohort"], how="left")
 
     def write(self, out_dir) -> dict[str, Path]:
+        """The three tables as CSV, and analysis.json: the Cox model and the settings they were computed with."""
         out = Path(out_dir)
         out.mkdir(parents=True, exist_ok=True)
-        paths = dict(groups=out / "group_tests.csv", survival=out / "survival.csv", cox_terms=out / "cox_terms.csv")
+        paths = dict(groups=out / "group_tests.csv", survival=out / "survival.csv", cox_terms=out / "cox_terms.csv",
+                     analysis=out / ANALYSIS_JSON)
         self.groups.to_csv(paths["groups"], index=False, lineterminator="\n")
         self.survival.to_csv(paths["survival"], index=False, lineterminator="\n")
         self.cox_terms.to_csv(paths["cox_terms"], index=False, lineterminator="\n")
+        meta = dict(splice_assay=__version__, model=self.model.to_dict(), settings=self.settings.to_dict())
+        paths["analysis"].write_text(json.dumps(meta, indent=1, sort_keys=True) + "\n")
         return paths
 
     @classmethod
     def read(cls, folder) -> "Results":
+        """Results written by `write`, with their model and settings (from analysis.json; a folder written without
+        it gets the defaults, with a warning)."""
         f = Path(folder)
         rd = lambda n: pd.read_csv(f / n, low_memory=False, float_precision="round_trip")  # noqa: E731
         terms = rd("cox_terms.csv") if (f / "cox_terms.csv").stat().st_size > 1 else pd.DataFrame()
-        return cls(rd("group_tests.csv"), rd("survival.csv"), terms)
+        groups, survival = rd("group_tests.csv"), rd("survival.csv")
+        meta = f / ANALYSIS_JSON
+        if not meta.exists():
+            warnings.warn(f"{folder}: no {ANALYSIS_JSON}, so the model and settings of these results are not known; "
+                          "the defaults are assumed", stacklevel=2)
+            return cls(groups, survival, terms)
+        try:
+            m = json.loads(meta.read_text())
+            return cls(groups, survival, terms, Settings.from_dict(m["settings"]), CoxModel(**m["model"]))
+        except (ValueError, TypeError, KeyError) as e:
+            raise InputError(f"{meta}: {e}") from None
 
 
 GROUP_FIRST = ["event_id", "gene", "cohort", "paired_status", "paired_n_pairs", "paired_delta_median", "paired_hl",
@@ -109,7 +139,8 @@ SV_FIRST = ["event_id", "gene", "cohort", "endpoint", "n_survival", "n_obs", "fr
             "km_p", "km_q", "cox_model", "cox_status", "cox_n", "cox_events", "psi_iqr", "cox_beta", "cox_se", "cox_p",
             "cox_q", "hr_per_step",
             "ci_low_step", "ci_high_step", "hr_per_iqr", "ci_low_iqr", "ci_high_iqr", "psi_sd", "hr_per_sd",
-            "ci_low_sd", "ci_high_sd", "cox_events_per_term", "psi_narrow", "ph_p", "km_ph_p", "km_notes"]
+            "ci_low_sd", "ci_high_sd", "cox_low_power", "cox_events_per_term", "psi_narrow", "ph_p", "km_ph_p",
+            "km_notes"]
 
 
 def event_settings(event_type, s: Settings) -> Settings:
@@ -120,8 +151,24 @@ def event_settings(event_type, s: Settings) -> Settings:
     return s
 
 
+def describe_model(model: CoxModel, ds: Dataset, events=None, settings: Settings | None = None) -> str:
+    """A model's terms as they are fitted for `events` (default: every event): host expression only when the model asks
+    for it and the expression table has the events' host gene (when only some have it, the text says so); with
+    `settings`, a ridge penalty that reaches its terms."""
+    from .stats.survival import ridge_text
+    ev = ds.events if events is None else ds.events.loc[list(events)]
+    hosts = set(ev.expression_gene)
+    qty = " or ".join(dict.fromkeys(sorted(ev.event_type.map(quantity), key=lambda q: q != "PSI"))) or "PSI"
+    with_expr = {h for h in hosts if ds.expression is not None and model.expression and h in ds.expression.index}
+    text = model.describe(bool(with_expr)).replace("PSI", qty, 1) + (
+        f"; {qty} alone where the host gene has no expression" if with_expr and len(with_expr) < len(hosts) else "")
+    if settings is not None:
+        text += ridge_text(settings, bool(model.covariates), [qty] + (["host expression"] if with_expr else []))
+    return text
+
+
 def default_events(ds: Dataset, include_hit: bool = False) -> list[str]:
-    """The events analysed when none are named: every event except HIT-index ones, unless include_hit."""
+    """The events analyzed when none are named: every event except HIT-index ones, unless include_hit."""
     return [e for e in ds.psi.index if include_hit or not opt_in(ds.events.at[e, "event_type"])]
 
 
@@ -164,14 +211,14 @@ def _names(x, what, known) -> list[str]:
 
 
 # ============================================================================================ run
-def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Settings | None = None,
+def analyze(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Settings | None = None,
             model: CoxModel | None = None, include_hit: bool = False) -> Results:
     """Case-vs-reference and survival statistics for the chosen events, cohorts and endpoints (default: all; without
     named events, HIT-index events only with include_hit).
 
     q values: Benjamini-Hochberg within each gene, separately for the paired tests, the all-samples tests, the KM
-    tests and the Cox PSI terms (the survival ones per endpoint), over the events and cohorts analysed together;
-    HIT-index events form families of their own. For gene-wide q, analyse all of a gene's events (panel and probe
+    tests and the Cox PSI terms (the survival ones per endpoint), over the events and cohorts analyzed together;
+    HIT-index events form families of their own. For gene-wide q, analyze all of a gene's events (panel and probe
     do)."""
     s = settings or Settings()
     model = model or CoxModel()
@@ -198,12 +245,11 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
         v = ds.psi.loc[eid]
         host_gene = ds.events.at[eid, "expression_gene"]
         host = None
-        if ds.expression is not None and host_gene in ds.expression.index:
-            host = ds.expression.loc[host_gene]
+        if ds.expression is not None and model.expression:   # no row for the host gene: no values, so PSI alone
+            host = ds.expression.loc[host_gene] if host_gene in ds.expression.index else \
+                pd.Series(np.nan, index=ds.samples.sample_id)
         for c in cohorts:
-            d = gd.cohorts[c]
-            g_rows.append(dict(event_id=eid, gene=gene, cohort=c,
-                               **compare_groups(v, d["pair_c"], d["pair_r"], d["cases"], d["refs"], se)))
+            g_rows.append(dict(event_id=eid, gene=gene, cohort=c, **gd.compare(v, c, se)))
             if sd is None:
                 continue
             base = sd.cohorts[c]
@@ -214,12 +260,6 @@ def analyse(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
                 rec = dict(event_id=eid, gene=gene, cohort=c, endpoint=ep)
                 row, terms = survival_cell(x_base, E["pos"], E["time"], E["event"], h_base, se, model,
                                            base["clinical"], quantity=quantity(etype))
-                if ds.expression is not None and host is None and model.expression and \
-                        row["cox_status"] != "coverage_gate":
-                    row = {k: v_ for k, v_ in row.items() if not k.startswith(("cox_", "hr_", "ci_", "ph_", "expr_"))
-                           and k not in ("psi_iqr", "psi_sd")}
-                    row.update(cox_model=model.describe(True), cox_status="no_host_expression")
-                    terms = []
                 sv_rows.append(dict(rec, **row))
                 t_rows += [dict(rec, **t) for t in terms]
     groups = _with_family(pd.DataFrame(g_rows), ds)
@@ -270,10 +310,10 @@ class ExpressionResults:
 GEX_SV_FIRST = ["gene", "cohort", "endpoint", "n_survival", "n_obs", "frac_obs", "off_modal", "eligible", "cutoff",
                 "km_split", "km_status", "km_n", "n_low", "n_high", "events_low", "events_high", "logrank_hr", "km_p",
                 "cox_model", "cox_status", "cox_n", "cox_events", "expr_sd", "cox_beta", "cox_se", "cox_p", "hr_per_sd",
-                "ci_low_sd", "ci_high_sd", "cox_events_per_term", "ph_p", "km_ph_p", "km_notes"]
+                "ci_low_sd", "ci_high_sd", "cox_low_power", "cox_events_per_term", "ph_p", "km_ph_p", "km_notes"]
 
 
-def analyse_expression(ds: Dataset, genes=None, endpoints=None, cohorts=None, settings: Settings | None = None,
+def analyze_expression(ds: Dataset, genes=None, endpoints=None, cohorts=None, settings: Settings | None = None,
                        model: CoxModel | None = None) -> ExpressionResults:
     """Case-vs-reference, KM and Cox statistics of host-gene expression (default: the expression gene of every
     event). The group tests are those of PSI without the 0/1 check; a hit needs |delta| > gex_min_abs_delta. Cox:
@@ -298,9 +338,7 @@ def analyse_expression(ds: Dataset, genes=None, endpoints=None, cohorts=None, se
     for g in genes:
         v = ds.expression.loc[g]
         for c in cohorts:
-            d = gd.cohorts[c]
-            g_rows.append(dict(gene=g, cohort=c, **compare_groups(v, d["pair_c"], d["pair_r"], d["cases"], d["refs"],
-                                                                  sg)))
+            g_rows.append(dict(gene=g, cohort=c, **gd.compare(v, c, sg)))
             if sd is None:
                 continue
             base = sd.cohorts[c]
@@ -315,3 +353,5 @@ def analyse_expression(ds: Dataset, genes=None, endpoints=None, cohorts=None, se
     sv = _order(pd.DataFrame(sv_rows), GEX_SV_FIRST) if sv_rows else pd.DataFrame(columns=GEX_SV_FIRST)
     return ExpressionResults(groups, sv, pd.DataFrame(t_rows), s, model)
 
+
+analyse, analyse_expression = analyze, analyze_expression          # the earlier spelling, still accepted

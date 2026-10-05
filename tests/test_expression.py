@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 import splice_assay as sa
-from splice_assay.analysis import analyse_expression
+from splice_assay.analysis import analyze_expression
 from splice_assay.cli import main
 from splice_assay.probe import probe
 from splice_assay.stats.survival import CoxModel, expression_cell
@@ -12,7 +12,7 @@ FAST = sa.Settings(formats=("png",), dpi=60)
 
 def test_expression_statistics(ds):
     m = CoxModel().with_clinical(("age", "stage"), baseline={"stage": "I"})
-    r = analyse_expression(ds, endpoints=["OS"], model=m)
+    r = analyze_expression(ds, endpoints=["OS"], model=m)
     assert set(r.groups.gene) == {"SYN1", "SYN2", "SYN3"} and r.groups.cohort.nunique() == 4
     assert (r.groups.paired_n_dropped_0_1.fillna(0) == 0).all()              # no PSI 0/1 check on expression
     sv = r.survival.set_index(["gene", "cohort"])

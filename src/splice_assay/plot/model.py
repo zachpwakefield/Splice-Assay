@@ -6,13 +6,14 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .. import events as EV
 from .. import provenance as P
-from ..analysis import Results, analyse
+from ..analysis import Results, analyze
 from ..config import Settings
 from ..dataset import Dataset, InputError
 from ..stats.survival import CoxModel
 from . import style as S
-from .panel_common import ENDPOINT_NAMES, Panel, safe_name
+from .panel_common import ENDPOINT_NAMES, Panel, model_mismatch, safe_name
 
 MODEL_NOTE = "Filled: p < {alpha:g}. Numeric covariates per SD of the fit cohort; categories against the level named."
 MAIN = ("psi_iqr", "psi_sd", "gex")                      # the tested term of a model: drawn bold, with a diamond
@@ -21,7 +22,7 @@ MAIN = ("psi_iqr", "psi_sd", "gex")                      # the tested term of a 
 def model_terms(ds: Dataset, event: str, cohort: str, endpoint: str, model: CoxModel | None = None,
                 settings: Settings | None = None, results: Results | None = None) -> tuple[pd.Series, pd.DataFrame]:
     """The survival row and the Cox terms of one cell (raises when the model was not fitted)."""
-    res = results if results is not None else analyse(ds, events=[event], cohorts=[cohort], endpoints=[endpoint],
+    res = results if results is not None else analyze(ds, events=[event], cohorts=[cohort], endpoints=[endpoint],
                                                      settings=settings, model=model)
     sv = res.survival
     row = sv[sv.event_id.eq(event) & sv.cohort.eq(cohort) & sv.endpoint.eq(endpoint)]
@@ -29,15 +30,26 @@ def model_terms(ds: Dataset, event: str, cohort: str, endpoint: str, model: CoxM
         raise InputError(f"no survival row for {event} in {cohort} ({endpoint})")
     row = row.iloc[0]
     if row.cox_status != "tested":
-        n = "" if pd.isna(row.get("cox_n", np.nan)) else f" ({int(row.cox_n)} patients, {int(row.cox_events)} events)"
-        raise InputError(f"the Cox model of {event} in {cohort} ({endpoint}) was not fitted: {row.cox_status}{n}")
+        raise InputError(f"the Cox model of {event} in {cohort} ({endpoint}) was not fitted: "
+                         f"{not_fitted(row, res.settings)}")
     t = res.cox_terms
     t = t[t.event_id.eq(event) & t.cohort.eq(cohort) & t.endpoint.eq(endpoint)].reset_index(drop=True)
     return row, t
 
 
+def not_fitted(row, s: Settings | None = None) -> str:
+    """Why a Cox model was not fitted, in words, with the counts that decided it."""
+    status, ev = str(row.get("cox_status", "")), row.get("cox_events", np.nan)
+    if status == "too_few_events_per_term" and pd.notna(row.get("cox_n_terms", np.nan)):
+        need = f"; needs {s.cox_min_events_per_term:g} per term" if s is not None else ""
+        k = int(row["cox_n_terms"])
+        return f"too few events per term ({int(ev)} events for {k} term{'s' if k != 1 else ''}{need})"
+    n = row.get("cox_n", np.nan)
+    return status.replace("_", " ") + ("" if pd.isna(n) else f" ({int(n)} patients, {int(ev)} events)")
+
+
 def display_rows(terms: pd.DataFrame, q: float = np.nan) -> list[dict]:
-    """The rows of a model forest: PSI per IQR (or per SD, Settings.psi_hr_unit), host expression and numeric
+    """The rows of a model forest: PSI per SD (or per IQR, Settings.psi_hr_unit), host expression and numeric
     covariates per SD, and each categorical covariate as a header with one indented row per level. `q`: the tested
     PSI term's q, kept on its row."""
     out = []
@@ -192,11 +204,19 @@ def cox_model_figure(ds: Dataset, event: str, cohort: str, endpoint: str, *, mod
     from matplotlib.figure import Figure
 
     s = settings or Settings()
+    if results is not None and model is not None and model != results.model:
+        raise InputError(model_mismatch(model, results.model))
     model = model or (results.model if results is not None else CoxModel())
     row, terms = model_terms(ds, event, cohort, endpoint, model, s, results)
     disp = display_rows(terms, float(getattr(row, "cox_q", np.nan)))
     gene, label = ds.events.at[event, "gene"], ds.events.at[event, "label"]
-    use_expr = ds.expression is not None and model.expression
+    # the other events of the q family (results computed over the gene) set the printed q: hashed too
+    qty = EV.quantity(ds.events.at[event, "event_type"])
+    family = [] if results is None else [
+        e for e in dict.fromkeys(results.survival.event_id) if e != event and e in ds.psi.index
+        and ds.events.at[e, "gene"] == gene and EV.quantity(ds.events.at[e, "event_type"]) == qty]
+    hosts = [h for h in dict.fromkeys(ds.events.loc[[event] + family, "expression_gene"])
+             if ds.expression is not None and model.expression and h in ds.expression.index]
     W, top, pitch = 5.6, 0.72, 0.19
     H = top + pitch * len(disp) + 0.55
     fx = lambda x: x / W                                                     # noqa: E731
@@ -207,19 +227,25 @@ def cox_model_figure(ds: Dataset, event: str, cohort: str, endpoint: str, *, mod
         tw = 0.12 + S.text_width(gene, 8.5, style="italic", weight="bold") + 0.05
         fig.text(fx(tw), fy(0.10), f"{label} · {cohort} · {endpoint}", fontsize=8.5, fontweight="bold", ha="left",
                  va="top")
-        fig.text(fx(0.12), fy(0.33), f"Cox: {model.describe(use_expr)} · {int(row.cox_n)} patients, "
-                 f"{int(row.cox_events)} events · {ENDPOINT_NAMES.get(endpoint, endpoint).lower()}",
+        lp = row.get("cox_low_power", False)
+        low = " (low power)" if pd.notna(lp) and bool(lp) else ""
+        fig.text(fx(0.12), fy(0.33), f"Cox: {row.cox_model} · {int(row.cox_n)} patients, "     # as fitted here
+                 f"{int(row.cox_events)} events{low} · {ENDPOINT_NAMES.get(endpoint, endpoint).lower()}",
                  fontsize=6.2, color=S.INK2, ha="left", va="top")
         rows = draw_terms(fig, W, H, top, 0.12, 5.33, disp, s.alpha, pitch, ph_below=s.ph_note_below,
                           q_below=s.q_mark_below)
         fig.text(fx(0.12), fy(H - 0.08), MODEL_NOTE.format(alpha=s.alpha), fontsize=5.6, color=S.MUTED, ha="left",
                  va="bottom")
-    table = pd.concat([pd.DataFrame(rows).assign(panel="term"), terms.assign(panel="cox_terms_all")],
+    head = pd.DataFrame([dict(panel="header", cox_model=row.cox_model, cox_n=int(row.cox_n),       # as printed
+                              cox_events=int(row.cox_events), cox_low_power=bool(low), endpoint=endpoint)])
+    table = pd.concat([head, pd.DataFrame(rows).assign(panel="term"), terms.assign(panel="cox_terms_all")],
                       ignore_index=True)
     stem = stem or "_".join([safe_name(gene), safe_name(label), safe_name(cohort), safe_name(endpoint), "cox"])
     prov = P.record("cox_model_figure", s, dict(psi=ds.psi.loc[[event]], samples=ds.samples, survival=ds.survival,
                                                  clinical=None if ds.clinical is None else ds.clinical[
-                                                     [c for c in model.clinical_columns if c in ds.clinical.columns]]),
+                                                     [c for c in model.clinical_columns if c in ds.clinical.columns]],
+                                                 expression=ds.expression.loc[hosts] if hosts else None,
+                                                 psi_q_family=ds.psi.loc[family] if family else None),
                     dict(event=event, cohort=cohort, endpoint=endpoint, model=model.to_dict()))
     paths = S.save(fig, out_dir, stem, s.formats, s.dpi, table, prov) if out_dir is not None else {}
     return Panel(figure=fig, table=table, paths=paths, provenance=prov, stem=stem)

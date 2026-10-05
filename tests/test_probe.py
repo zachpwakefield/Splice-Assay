@@ -17,6 +17,10 @@ def test_detect_and_clean_clinical_columns():
     assert [clean_stage(v) for v in ["Stage IIA", "IIIc", "Stage IV", "I", "Stage 0", "missing", "[Not Available]",
                                      "Stage X", np.nan]][:5] == ["II", "III", "IV", "I", "0"]
     assert all(pd.isna(clean_stage(v)) for v in ["missing", "[Not Available]", "Stage X", np.nan])
+    # stage numbers: integers, floats (a numeric column with gaps), text with a substage
+    assert [clean_stage(v) for v in [1, 2.0, np.int64(3), "4", "2B", "Stage 3a", "1.0", 0]] == \
+        ["I", "II", "III", "IV", "II", "III", "I", "0"]
+    assert all(pd.isna(clean_stage(v)) for v in [5, 1.5, "-1", True, "IS"])
     assert [clean_sex(v) for v in ["FEMALE", "m", "Male"]] == ["female", "male", "male"]
     assert pd.isna(clean_sex("not reported"))
 
@@ -39,15 +43,15 @@ def test_a_mostly_missing_covariate_is_left_out_of_that_cohort(tables):
     cl.loc[cl.patient_id.isin(coh1), "stage"] = np.nan                          # no stage at all in COH1
     ds = sa.Dataset.from_tables(**dict(tables, clinical=cl))
     m = sa.CoxModel(covariates=("age", "stage"), baseline={"stage": "I"})
-    sv = sa.analyse(ds, events=["SYN1:SE:1"], endpoints=["OS"], model=m).survival.set_index("cohort")
+    sv = sa.analyze(ds, events=["SYN1:SE:1"], endpoints=["OS"], model=m).survival.set_index("cohort")
     assert sv.at["COH1", "cox_status"] == "tested" and "stage left out (0% recorded)" in sv.at["COH1", "cox_notes"]
     assert sv.at["COH1", "cox_model"] == "PSI + host expression + age"
     assert sv.at["COH3", "cox_model"] == "PSI + host expression + age + stage"
 
 
 def test_pick_cohorts_prefers_the_adjusted_p(ds):
-    base = sa.analyse(ds, events=["SYN1:SE:1"], endpoints=["OS"])
-    adj = sa.analyse(ds, events=["SYN1:SE:1"], endpoints=["OS"], model=sa.CoxModel(covariates=("age",)))
+    base = sa.analyze(ds, events=["SYN1:SE:1"], endpoints=["OS"])
+    adj = sa.analyze(ds, events=["SYN1:SE:1"], endpoints=["OS"], model=sa.CoxModel(covariates=("age",)))
     cells = combine(base, adj, "OS")
     got = pick_cohorts(cells, "SYN1:SE:1", 2)
     want = cells[cells.adj_cox_status.eq("tested")].sort_values("adj_cox_p").cohort.head(2).tolist()
@@ -142,13 +146,13 @@ def test_probe_when_no_cox_model_can_be_fitted(ds, tmp_path):
 
 
 def test_relaxed_gates_are_reported(ds, tmp_path):
-    s = sa.Settings(formats=("png",), dpi=60, min_pairs=7, min_group=7, cox_min_events=10)
-    assert s.changed() == {"min_pairs": (7, 10), "min_group": (7, 10), "cox_min_events": (10, 20)}
+    s = sa.Settings(formats=("png",), dpi=60, min_pairs=7, min_group=7, cox_min_events=5)
+    assert s.changed() == {"min_pairs": (7, 10), "min_group": (7, 10), "cox_min_events": (5, 10)}
     assert sa.Settings(dpi=60, formats=("png",)).changed() == {}                # drawing settings do not count
     res = probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path, top=1, max_pages=1, log=lambda *_: None)
     report = res.paths["report"].read_text()
     assert "Settings changed from the defaults:** min_pairs 7 (default 10), min_group 7 (default 10), " \
-           "cox_min_events 10 (default 20)" in report
+           "cox_min_events 5 (default 10)" in report
     p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s)
     assert "Settings changed from the defaults" in " ".join(t.get_text() for t in p.figure.texts)
 
@@ -157,7 +161,7 @@ def test_flags_are_reported(ds, tmp_path):
     s = sa.Settings(formats=("png",), dpi=60, narrow_psi_below=1.0)            # every PSI range counts as narrow
     res = probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path, top=1, max_pages=1, log=lambda *_: None)
     t = res.cells[res.cells.cox_status.eq("tested")]
-    assert len(t) and t.psi_narrow.astype(bool).all() and "narrow PSI range (IQR" in t.cox_notes.iloc[0]
+    assert len(t) and t.psi_narrow.astype(bool).all() and "narrow PSI range (SD" in t.cox_notes.iloc[0]
     a = t[t.adj_cox_status.eq("tested")]
     assert len(a) and a.adj_psi_narrow.astype(bool).all() and a.adj_cox_events_per_term.notna().all()
     rep = (tmp_path / "report.md").read_text()
@@ -189,3 +193,227 @@ def test_probe_several_endpoints_on_the_command_line(tables, tmp_path, capsys):
                  "--settings", str(_fast(tmp_path)), "--out", str(tmp_path / "pr")]) == 0
     assert (tmp_path / "pr" / "OS" / "report.md").exists() and (tmp_path / "pr" / "DSS" / "report.md").exists()
     assert "== DSS" in capsys.readouterr().out
+
+
+def test_the_default_adjusted_model_builds_on_the_base_model(ds, tmp_path):
+    """Without host expression in the base model (--no-expression), the adjusted model has none either, and the
+    report names both models as fitted."""
+    res = probe(ds, genes=["SYN1"], settings=FAST, model=sa.CoxModel(expression=False), out_dir=tmp_path, max_pages=0,
+                gex=False, log=lambda *_: None)
+    assert set(res.cells.cox_model.dropna()) == {"PSI"}
+    adj = set(res.cells.adj_cox_model.dropna())
+    assert adj and all(m.startswith("PSI + age") and "host expression" not in m for m in adj)
+    report = res.paths["report"].read_text()
+    assert "(the forest on every page): Cox PSI." in report
+    assert "(the model rows on every page and the ranking): Cox PSI + age + sex + stage" in report
+
+
+def test_panel_model_rows_build_on_the_page_model(tmp_path, capsys):
+    """panel's default model rows: the page's model plus the age, sex and stage found, keeping --no-expression and
+    --strata; --detail keeps them too."""
+    from splice_assay import example
+    example.write(tmp_path / "ex")
+    data = str(tmp_path / "ex" / "data")
+    fast = tmp_path / "fast.json"
+    fast.write_text('{"formats": ["png"], "dpi": 60}')
+    base = ["panel", data, "--event", "SYN1:SE:1", "--cohort", "COH1", "--endpoint", "OS", "--no-gex", "--settings",
+            str(fast)]
+    for extra, want in ((["--no-expression"], "model rows: Cox PSI + age + sex + stage; found"),
+                        (["--strata", "stage"], "model rows: Cox PSI + host expression + age + sex; strata: stage"),
+                        (["--detail"], "model rows: Cox PSI + host expression + age + sex + stage; found")):
+        assert main(base + extra + ["--out", str(tmp_path / extra[0].strip("-"))]) == 0
+        assert want in capsys.readouterr().out, extra
+    rows = pd.read_csv(next((tmp_path / "no-expression").glob("*.csv")), low_memory=False)
+    terms = set(rows[rows.panel.eq("cox_detail")].term.dropna())
+    assert {"PSI", "age", "sex", "stage"} <= terms and "host expression" not in terms
+
+
+def test_a_variable_the_base_model_has_is_not_added_again(tables):
+    """TCGA-style names: the base model's gender, age_at_diagnosis or stage stratum is not added again as the cleaned
+    sex, age or stage (that would duplicate the variable and fail every fit)."""
+    from splice_assay.clinical import adjusted
+    cl = tables["clinical"].rename(columns={"sex": "gender", "stage": "ajcc_pathologic_stage",
+                                            "age": "age_at_diagnosis"})
+    ds2, auto, found = auto_clinical(sa.Dataset.from_tables(**dict(tables, clinical=cl)))
+    for base, want in ((sa.CoxModel(covariates=("gender",)), "PSI + host expression + gender + age + stage"),
+                       (sa.CoxModel(strata=("ajcc_pathologic_stage",)),
+                        "PSI + host expression + age + sex; strata: ajcc_pathologic_stage"),
+                       (sa.CoxModel(covariates=("age_at_diagnosis",)),
+                        "PSI + host expression + age_at_diagnosis + sex + stage")):
+        m = adjusted(base, auto, found)
+        assert m.describe(True) == want
+        sv = sa.analyze(ds2, events=["SYN1:SE:1"], endpoints=["OS"], model=m).survival
+        assert sv.cox_status.eq("tested").any() and not sv.cox_status.eq("failed").any()
+
+
+def test_numeric_stage_codes_are_kept(tables):
+    """A stage column coded 1-3 is cleaned to I-III, so the adjusted model keeps stage."""
+    cl = tables["clinical"].copy()
+    cl["stage"] = cl.stage.map({"I": 1, "II": 2, "III": 3}).astype(float)
+    cl.loc[cl.index[0], "stage"] = np.nan                                    # a gap makes the column float
+    ds2, model, found = auto_clinical(sa.Dataset.from_tables(**dict(tables, clinical=cl)))
+    assert "stage" in model.covariates and set(ds2.clinical.stage.dropna()) == {"I", "II", "III"}
+    want = auto_clinical(sa.Dataset.from_tables(**tables))[0].clinical.stage
+    assert ds2.clinical.stage.iloc[1:].equals(want.iloc[1:])
+
+
+def test_stage_numbers_are_read_only_from_overall_stage_columns(tables):
+    """T, N, M and summary stages are not taken for the overall stage, and numbers are read only from a column named
+    as an overall stage (a SEER summary stage 1-4 is not stage I-IV)."""
+    assert detect(["pathologic_t_stage", "overall_stage"]) == {"stage": "overall_stage"}
+    assert "stage" not in detect(["seer_summary_stage", "clinical_n_stage", "t_stage"])
+    assert detect(["stage_event_pathologic_stage"]) == {"stage": "stage_event_pathologic_stage"}
+    assert clean_stage("02") == "II" and pd.isna(clean_stage("02", numbers=False))
+    assert clean_stage("Stage IIB", numbers=False) == "II" and pd.isna(clean_stage(3, numbers=False))
+    cl = tables["clinical"].drop(columns="stage").assign(
+        stage_event_pathologic_stage=tables["clinical"].stage.map({"I": 1, "II": 2, "III": 3}))
+    ds2, model, found = auto_clinical(sa.Dataset.from_tables(**dict(tables, clinical=cl)))
+    assert found["stage"] == "stage_event_pathologic_stage" and "stage" not in model.covariates   # numbers: not read
+
+
+def test_the_base_models_own_columns_are_not_rewritten(tables):
+    """A column the base model names (here a raw stage) is left as it is by the automatic adjustment, so the forest
+    has the same numbers with or without model rows."""
+    cl = tables["clinical"].copy()
+    cl["stage"] = "Stage " + cl.stage.astype(str) + "A"
+    ds = sa.Dataset.from_tables(**dict(tables, clinical=cl))
+    ds2, auto, found = auto_clinical(ds, keep=("stage",))
+    assert "stage" not in found and ds2.clinical.stage.equals(ds.clinical.stage) and auto.covariates == ("age", "sex")
+    m = sa.CoxModel(covariates=("stage",))
+    a, b = (sa.analyze(d, events=["SYN1:SE:1"], endpoints=["OS"], model=m).survival for d in (ds, ds2))
+    assert np.array_equal(a.cox_p.to_numpy(float), b.cox_p.to_numpy(float), equal_nan=True)
+
+
+def test_the_probe_names_the_models_as_fitted_without_expression(tables, tmp_path):
+    """No expression for the host gene: the report names both models without it and counts the fits."""
+    ex = tables["expression"]
+    ds = sa.Dataset.from_tables(**dict(tables, expression=ex[ex.gene.ne("SYN1")]))
+    res = probe(ds, genes=["SYN1"], settings=FAST, out_dir=tmp_path, max_pages=0, gex=False, log=lambda *_: None)
+    report = res.paths["report"].read_text()
+    assert "(the forest on every page): Cox PSI." in report
+    assert "(the model rows on every page and the ranking): Cox PSI + age + sex + stage" in report
+    assert "**Host expression left out**" in report
+    assert set(res.cells.cox_model.dropna()) == {"PSI"}
+
+
+def test_low_power_reaches_the_ranking(ds, tmp_path):
+    s = FAST.replace(cox_low_power_events=10_000)                     # every fit counts as low power
+    res = probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path, max_pages=0, gex=False, log=lambda *_: None)
+    cox = res.events[res.events.best_model.isin(["adjusted", "base"])]
+    assert len(cox) and cox.best_low_power.all()
+    rep = res.paths["report"].read_text()
+    assert " ‡ |" in rep and "**Low power**" in rep and "‡ low power (fewer than 10000 Cox events)" in rep
+    top = res.events.iloc[0]                                          # every hit is in a low-power fit
+    assert top.adj_cox_p05 > 0 and top.adj_cox_p05_low_power == top.adj_cox_p05
+    assert f"| {top.adj_cox_p05} ({top.adj_cox_p05_low_power}‡) |" in rep
+
+
+def test_ranking_counts_low_power_hits_last(ds):
+    """Cox hits in fits that are not low power rank the events; low-power hits (‡) only break ties. The best cohort and
+    the page cohorts prefer a hit that is not low power."""
+    from splice_assay.probe import pick_cohorts, rank_events
+    ev = ["SYN1:SE:1", "SYN1:A3SS:1", "SYN1:RI:1", "SYN2:MXE:1"]
+    adj = {ev[0]: [0.01, 0.02, 0.5, 0.5], ev[1]: [0.03, 0.04, 0.001, 0.5], ev[2]: [0.04, 0.5, 0.002, 0.003],
+           ev[3]: [0.5, 0.5, 0.01, 0.5]}
+    low = [False, False, True, True]                                  # cohorts C and D have few events
+    cells = pd.DataFrame([dict(event_id=e, cohort=c, cox_status="tested", cox_p=0.5, hr_per_sd=1.2, cox_q=0.9,
+                               cox_low_power=lo, adj_cox_status="tested", adj_cox_p=p, adj_hr_per_sd=1.5,
+                               adj_cox_low_power=lo, km_status="gate", km_p=np.nan, logrank_hr=np.nan,
+                               group_hit=False, within_patient_support=False, survival_hit=False, psi_sd=0.1)
+                          for e in ev for c, p, lo in zip("ABCD", adj[e], low)])
+    r = rank_events(cells, ds, 0.05).set_index("event_id")
+    assert list(r.sort_values("rank").index) == [ev[1], ev[0], ev[2], ev[3]]   # 2+1‡, 2, 1+2‡, 0+1‡
+    assert r.loc[ev[1], ["adj_cox_p05", "adj_cox_p05_low_power", "best_cohort", "best_low_power"]].tolist() == \
+        [3, 1, "A", False]                                            # A (p 0.03), not C (p 0.001, low power)
+    assert r.loc[ev[3], "best_cohort"] == "C" and r.loc[ev[3], "best_low_power"]   # only a low-power hit
+    assert pick_cohorts(cells, ev[1], 3) == ["A", "B", "C"] and pick_cohorts(cells, ev[3], 2) == ["C", "A"]
+
+
+def test_panel_rows_show_the_page_model_when_nothing_is_left_to_add(tmp_path, capsys):
+    """--covariate age, sex and stage already on the page: the model rows show that model (nothing is found to add)."""
+    from splice_assay import example
+    example.write(tmp_path / "ex")
+    fast = tmp_path / "fast.json"
+    fast.write_text('{"formats": ["png"], "dpi": 60}')
+    assert main(["panel", str(tmp_path / "ex" / "data"), "--event", "SYN1:SE:1", "--cohort", "COH1", "--endpoint", "OS",
+                 "--no-gex", "--covariate", "age", "--covariate", "sex", "--covariate", "stage", "--settings",
+                 str(fast),
+                 "--out", str(tmp_path / "fig")]) == 0
+    rows = pd.read_csv(next((tmp_path / "fig").glob("*.csv")), low_memory=False)
+    assert {"PSI", "age", "sex", "stage"} <= set(rows[rows.panel.eq("cox_detail")].term.dropna())
+    capsys.readouterr()
+
+
+def test_the_report_says_what_changed_settings_mean(ds, tmp_path):
+    """Relaxed gates are named as such; a ridge or another HR unit is not a relaxed gate. The overview's caption names
+    a penalty only when the fits it shows have one."""
+    n = iter(range(100))
+    run = (lambda s, **kw: probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path / str(next(n)), max_pages=0,
+                                 gex=False, log=lambda *_: None, **kw))
+    rep = (lambda s: run(s).paths["report"].read_text())
+    assert "relaxed gates" not in rep(FAST.replace(cox_ridge="clinical", psi_hr_unit="iqr"))
+    assert "relaxed gates" in rep(FAST.replace(low_psi_variance_sd=0.0))
+    assert "relaxed gates" in rep(FAST.replace(min_pairs=5))
+    from splice_assay.probe import overview
+    caption = (lambda r, s: next(x.get_text() for x in overview(r.cells, r.events, "OS", s).texts
+                                 if x.get_text().startswith("colour:")))
+    s = FAST.replace(cox_ridge="clinical")
+    assert "(adjusted model where fitted; ridge λ 1 on clinical terms)" in caption(run(s), s)
+    assert "ridge" not in caption(run(s, adjusted=None), s)                  # no clinical term was penalized
+
+
+def test_the_report_says_which_terms_a_ridge_reached(ds, tmp_path):
+    """One line, worded for the scope and the terms the penalty reached; none when it reached no fitted model."""
+    n = iter(range(100))
+
+    def line(s, **kw):
+        r = probe(ds, genes=["SYN1"], settings=s, out_dir=tmp_path / str(next(n)), max_pages=0, gex=False,
+                  log=lambda *_: None, **kw)
+        found = [x for x in r.paths["report"].read_text().splitlines() if x.startswith("- **Penalty:**")]
+        assert len(found) <= 1
+        return found[0] if found else ""
+    assert line(FAST.replace(cox_ridge="clinical")).startswith(
+        "- **Penalty:** ridge λ 1 on the clinical terms of the adjusted model: they are shrunk jointly toward HR 1, "
+        "so they adjust PSI only partly: its HR stays closer to the HR without them")
+    assert line(FAST.replace(cox_ridge="molecular")).startswith(
+        "- **Penalty:** ridge λ 1 on the PSI and host-expression terms of the base and adjusted models: they are "
+        "shrunk jointly toward HR 1, though a single HR (PSI's too) can move away from 1")
+    every = line(FAST.replace(cox_ridge="all", cox_ridge_penalty=2.0))
+    assert every.startswith("- **Penalty:** ridge λ 2 on all terms of the base and adjusted models: they are shrunk "
+                            "jointly") and "; the clinical terms adjust PSI only partly" in every
+    # clinical terms of the base model alone count too; PSI alone is one term
+    assert "; the clinical terms adjust PSI only partly" in line(FAST.replace(cox_ridge="all"), adjusted=None,
+                                                                 model=sa.CoxModel(covariates=("age",)))
+    assert line(FAST.replace(cox_ridge="all"), adjusted=None, model=sa.CoxModel(expression=False)).startswith(
+        "- **Penalty:** ridge λ 1 on the PSI term of the base model: its HR is shrunk toward 1.")
+    assert line(FAST.replace(cox_ridge="clinical"), adjusted=None) == ""      # nothing clinical to penalize
+    assert line(FAST.replace(cox_ridge="molecular", cox_min_n=10_000)) == ""  # nothing fitted
+
+
+def test_the_report_names_the_fits_the_events_per_term_minimum_stopped(ds, tmp_path):
+    rep = probe(ds, genes=["SYN1"], settings=FAST.replace(cox_min_events_per_term=1000), out_dir=tmp_path,
+                max_pages=0, gex=False, log=lambda *_: None).paths["report"].read_text()
+    assert "**Not fitted: too few events per term** (fewer than 1000 events per estimated term" in rep
+    assert "(except the fits the events-per-term minimum stopped)" in rep and "**Penalty:**" not in rep
+
+
+def test_report_notes_name_every_flagged_fit(ds):
+    """The low-power note names fits with p < alpha in the base or the adjusted model (the ranking uses the adjusted
+    one), and an object column with gaps (as in real data) raises no pandas warning; the host-expression line names
+    every cohort with p < alpha, ‡ marking low power."""
+    from splice_assay.probe import _flag_lines, _gex_cox_line
+    cells = pd.DataFrame({
+        "event_id": ["SYN1:SE:1", "SYN1:SE:1", "SYN1:A3SS:1"], "cohort": ["COH1", "COH2", "COH1"],
+        "cox_status": ["tested"] * 3, "cox_p": [0.01, 0.2, 0.3], "cox_events": [12, 12, 50],
+        "adj_cox_status": ["tested"] * 3, "adj_cox_p": [0.02, 0.01, 0.01], "adj_cox_events": [12, 12, 50],
+        "km_status": ["gate"] * 3, "psi_narrow": pd.Series([True, np.nan, False], dtype=object)})
+    lines = _flag_lines(cells, ds, FAST, sa.CoxModel(covariates=("age",)))
+    low = next(x for x in lines if x.startswith("- **Low power**"))
+    assert "with p < 0.05 (base or adjusted model): SE:1 COH1, SE:1 COH2." in low      # COH2: adjusted p only
+    assert any(x.startswith("- **Narrow PSI range**") and "1 of 3 base-model fits; with p < 0.05: SE:1 COH1." in x
+               for x in lines)
+    gex = pd.DataFrame({"gene": "SYN1", "cohort": [f"C{i}" for i in range(8)], "cox_status": "tested",
+                        "cox_p": np.linspace(0.001, 0.04, 8), "hr_per_sd": 1.5, "cox_low_power": [False] * 7 + [True]})
+    line = _gex_cox_line(gex, FAST)
+    assert line.startswith("- **Cox:** 8 cohorts tested; expression has p < 0.05 in 8 (C0 HR 1.50, C1 HR 1.50, ")
+    assert line.endswith(", C7 HR 1.50 ‡); ‡ fewer than 20 events.")

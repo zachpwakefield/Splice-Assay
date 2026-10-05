@@ -137,8 +137,10 @@ def gene_model(gtf: pd.DataFrame, gene: str, chrom: str, span, gene_id: str = ""
     blocks, ntx, thr = collapsed_model(host[host.feature.eq("exon")], s.gene_model_min_frac,
                                        s.exclude_transcript_types)
     if not blocks:
-        warnings.warn(f"GTF: gene {rec.gene_name or rec.gene_id} has no multi-exon transcript; the gene track is "
-                      "omitted", stacklevel=2)
+        why = ("has no multi-exon transcript" if not ntx else
+               f"has no exon shared by at least {thr:g} of its {ntx} multi-exon transcript{'s' if ntx > 1 else ''} "
+               "(the collapsed gene model keeps those)")
+        warnings.warn(f"GTF: gene {rec.gene_name or rec.gene_id} {why}; the gene track is omitted", stacklevel=2)
         return None
     sn = on[on.feature.eq("gene") & on.gene_type.isin(s.nested_biotypes) & (on.start < rec.end) & (on.end > rec.start)]
     sn = sn.groupby("gene_name", as_index=False).agg(start=("start", "min"), end=("end", "max"))

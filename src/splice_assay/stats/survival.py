@@ -8,19 +8,27 @@ Endpoint cohort   survival samples whose patient has a valid row for the endpoin
 KM                The cut is the median of the survival samples' values (Settings.km_split: median, mean or a
                   number; km_split_expression for expression). PSI <= cut is the low arm. Needs km_min_group
                   patients per arm and km_min_events events. The log-rank HR is (O/E high) / (O/E low).
-Cox               h(t) = h0(t) exp(b * PSI/0.10 + g * z(host expression) + covariates), Efron ties, no penalty
-                  (lifelines). Host expression enters when an expression table is given (CoxModel.expression);
-                  clinical covariates when named (CoxModel). Patients missing any model variable are left out.
-                  Needs cox_min_n patients, cox_min_events events and min_off_modal PSI values away from the mode.
+Cox               h(t) = h0(t) exp(b * PSI/0.10 + g * z(host expression) + covariates), Efron ties (lifelines); no
+                  penalty unless Settings.cox_ridge (ridge_penalizer: lambda/2 * beta^2 per penalized term, per SD or
+                  per category level; the model's name says so). Host expression enters when an expression table
+                  is given (CoxModel.expression); like a clinical variable, it is left out of a cohort's model (PSI
+                  alone, with a note in cox_notes) when it is recorded for fewer than covariate_min_complete of the
+                  fit patients (none when the table has no row for the host gene), or is constant. Clinical
+                  covariates enter when named (CoxModel).
+                  Patients missing any model variable are left out.
+                  Needs cox_min_n patients, cox_min_events events and min_off_modal PSI values away from the mode
+                  (and, opt-in, cox_min_events_per_term events per estimated term: too_few_events_per_term).
                   HR per IQR = exp(b * IQR/0.10), IQR of PSI over the fit cohort (NaN when the IQR is 0); HR per
                   SD the same with the SD. Settings.psi_hr_unit picks the one the pages show.
 Low variance      SD(PSI) < low_psi_variance_sd stops the tests ('low_psi_variance').
 Rare levels       a category with fewer than level_min_patients patients (or no events) in the fit cohort merges
-                  into its neighbour before the fit (stage I into 'I–II'); cox_notes lists each merge.
-Flags             notes only, the fit runs: fewer events per estimated term than cox_events_per_term (overfit
-                  risk), a PSI spread (IQR or SD) in the fit cohort below narrow_psi_below (narrow PSI range), and
-                  a proportional-hazards test below ph_note_below for any model term (cox_notes) or for the KM
-                  split (km_notes). The PH tests are Schoenfeld tests on the Kaplan-Meier time scale (lifelines).
+                  into its neighbour before the fit (stage I into 'I–II'; an unordered category into the most common
+                  one, or the most common one, without events, into the next); cox_notes lists each merge.
+Flags             notes only, the fit runs: fewer events than cox_low_power_events (low power), fewer events per
+                  estimated term than cox_events_per_term (overfit risk), a PSI spread (IQR or SD) in the fit cohort
+                  below narrow_psi_below (narrow PSI range), and a proportional-hazards test below ph_note_below for
+                  any model term (cox_notes) or for the KM split (km_notes). The PH tests are Schoenfeld tests on
+                  the Kaplan-Meier time scale (lifelines).
 Failed fits       any lifelines convergence warning, an exception, a non-finite estimate or se <= 0 marks the fit
                   'failed' (no estimate is reported). A Newton-Raphson failure is refitted once with a smaller step.
 Expression        `expression_cell` runs the same KM and Cox on host-gene expression itself (Cox: z(expression) +
@@ -92,13 +100,13 @@ class CoxModel:
 
 # ============================================================================================ Cox fitting
 def fit_cox(df: pd.DataFrame, term: str, extra: dict[str, str] | None = None, ph: bool = True,
-            refit_step_size: float = 0.5, strata: list[str] | None = None) -> dict:
-    """lifelines CoxPHFitter (Efron ties, no penalty). `term` is the tested coefficient; `extra` maps other
-    coefficients to output prefixes; `summary` holds every coefficient. A Newton-Raphson failure is refitted once
-    with `refit_step_size`."""
-    out, nr = _fit_once(df, strata, term, extra, ph, None)
+            refit_step_size: float = 0.5, strata: list[str] | None = None, penalizer=0.0) -> dict:
+    """lifelines CoxPHFitter (Efron ties; no penalty unless `penalizer`, lifelines' own, from `ridge_penalizer`).
+    `term` is the tested coefficient; `extra` maps other coefficients to output prefixes; `summary` holds every
+    coefficient. A Newton-Raphson failure is refitted once with `refit_step_size`."""
+    out, nr = _fit_once(df, strata, term, extra, ph, None, penalizer)
     if out["status"] == "failed" and nr:
-        out2, _ = _fit_once(df, strata, term, extra, ph, refit_step_size)
+        out2, _ = _fit_once(df, strata, term, extra, ph, refit_step_size, penalizer)
         if out2["status"] == "tested":
             return dict(out2, fit_note=f"refit_step_size_{refit_step_size}")
         return dict(out2, fit_warning=f"{out.get('fit_warning', '')} || refit step_size {refit_step_size}: "
@@ -113,11 +121,11 @@ def _fit_failure_warning(w) -> bool:
                                                      and "lifelines" in str(w.filename))
 
 
-def _fit_once(df, strata, term, extra, ph, step_size) -> tuple[dict, bool]:
+def _fit_once(df, strata, term, extra, ph, step_size, penalizer=0.0) -> tuple[dict, bool]:
     from lifelines import CoxPHFitter
     from lifelines.statistics import proportional_hazard_test
 
-    cph = CoxPHFitter(penalizer=0.0)
+    cph = CoxPHFitter(penalizer=penalizer)
     opts = None if step_size is None else {"step_size": step_size}
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -151,6 +159,43 @@ def _failed(out: dict) -> dict:
     """A failed fit keeps only its warning: no estimate of any coefficient is reported."""
     blank = {k: (v if k == "fit_warning" else NAN) for k, v in out.items()}
     return dict(blank, status="failed")
+
+
+# ============================================================================================ ridge
+RIDGE_KINDS = {"none": (), "clinical": ("numeric", "categorical"), "molecular": ("psi", "expression", "gex"),
+               "all": ("psi", "expression", "gex", "numeric", "categorical")}
+
+
+def ridge_penalizer(df: pd.DataFrame, meta: list, s: Settings, strata_cols=()):
+    """lifelines' penalizer for a design under Settings.cox_ridge: lambda / n for each penalized term, 0 for the others
+    (0.0 when nothing is penalized). lifelines penalizes a coefficient per SD of its column; that is the scale meant
+    for PSI, expression and numeric covariates, while a category level's log HR is penalized per level (its column's
+    variance divides the penalizer). The total penalty is lambda/2 * beta^2 per term, whatever the cohort's size."""
+    kinds = RIDGE_KINDS[s.cox_ridge]
+    if not kinds or not len(df):
+        return 0.0
+    kind = {m["column"]: m["kind"] for m in meta}
+    cols = [c for c in df.columns if c not in ("time", "event") and c not in set(strata_cols)]
+    pen = []
+    for c in cols:
+        k = kind.get(c)
+        if k not in kinds:
+            pen.append(0.0)
+            continue
+        var = float(np.var(df[c].to_numpy(float), ddof=1)) if k == "categorical" else 1.0
+        pen.append(s.cox_ridge_penalty / len(df) / var if var > 0 else 0.0)
+    pen = np.asarray(pen)
+    return pen if pen.any() else 0.0
+
+
+def ridge_text(s: Settings, clinical: bool, molecular: list[str]) -> str:
+    """'; ridge lambda 1 (clinical terms)' for a model whose terms the ridge reaches ('' otherwise): `clinical`, whether
+    it has clinical terms; `molecular`, its PSI (or HIT index) and expression terms."""
+    if s.cox_ridge == "none" or (s.cox_ridge == "clinical" and not clinical) or \
+            (s.cox_ridge == "molecular" and not molecular):
+        return ""
+    what = {"clinical": "clinical terms", "molecular": " and ".join(molecular), "all": "all terms"}[s.cox_ridge]
+    return f"; ridge λ {s.cox_ridge_penalty:g} ({what})"
 
 
 # ============================================================================================ gates
@@ -215,7 +260,8 @@ def merge_rare_levels(v: pd.Series, event: np.ndarray, min_n: int) -> tuple[pd.S
     """Merge the levels of a categorical covariate that are too rare to estimate in the fit cohort: fewer than
     `min_n` patients, or no events. Ordered levels (stage numerals, numbers) merge into the adjacent level with fewer
     patients, the rarest first, so 'I' joins 'II' as 'I–II'; unordered levels merge into the most common level
-    ('white+asian'). Returns the merged values, the label of each original level, and one note per merge.
+    ('white+asian'), and the most common level itself, when it has no events, into the next most common
+    ('black+white'). Returns the merged values, the label of each original level, and one note per merge.
     `min_n` = 0 merges nothing."""
     levels = sorted(v.unique())
     label = {lev: lev for lev in levels}
@@ -242,13 +288,26 @@ def merge_rare_levels(v: pd.Series, event: np.ndarray, min_n: int) -> tuple[pd.S
             for lev in g:
                 label[lev] = name(g)
     else:
-        top = sorted(levels, key=lambda k: (-n[k], k))[0]
-        small = [lev for lev in levels if lev != top and rare([lev])]
-        if small:
-            for lev in [top] + small:
-                label[lev] = "+".join([top] + small)
-            notes.append(f"{', '.join(small)} merged into {top} ({size(small)} patients, "
-                         f"{sum(d[x] for x in small)} events)")
+        groups = [[lev] for lev in levels]
+        while len(groups) > 1:
+            groups.sort(key=lambda g: (-size(g), g[0]))        # the most common first
+            top, others = groups[0], groups[1:]
+            small = [g for g in others if rare(g)]
+            if small:                                          # rare levels join the most common one
+                members = sorted((x for g in small for x in g), key=levels.index)
+                notes.append(f"{', '.join(members)} merged into {'+'.join(top)} ({size(members)} patients, "
+                             f"{sum(d[x] for x in members)} events)")
+                groups = [top + members] + [g for g in others if g not in small]
+            elif rare(top):                                    # the most common level has no events
+                nxt = others[0]
+                notes.append(f"{'+'.join(top)} merged into {'+'.join(nxt)} ({size(top)} patients, "
+                             f"{sum(d[x] for x in top)} events)")
+                groups = [nxt + top] + others[1:]
+            else:
+                break
+        for g in groups:
+            for lev in g:
+                label[lev] = "+".join(g)
     return v.map(label), label, notes
 
 
@@ -274,6 +333,8 @@ def _clinical_design(df: pd.DataFrame, meta: list, notes: list, Cf: pd.DataFrame
             v, label, merges = merge_rare_levels(v, df["event"].to_numpy(), s.level_min_patients)
             notes.extend(f"{c} {m}" for m in merges)
             counts = v.value_counts()
+            if counts.empty:
+                continue
             ref = sorted(counts.index, key=lambda k: (-counts[k], k))[0]
             want = dict(model.baseline).get(c)
             if want is not None:
@@ -333,10 +394,14 @@ def _km_ph(r: dict, t, e, high, s: Settings) -> None:
 
 
 def _fit_flags(r: dict, n_terms: int, s: Settings, spread: float | None = None, quantity: str = "PSI") -> list[str]:
-    """Notes on a fitted model, which runs anyway: fewer events per estimated term than cox_events_per_term (an
-    overfit risk), and, for PSI, a spread in the fit cohort below narrow_psi_below (the HR covers a few PSI points).
-    Sets cox_events_per_term and psi_narrow on the row."""
+    """Notes on a fitted model, which runs anyway: fewer events than cox_low_power_events (low power), fewer events
+    per estimated term than cox_events_per_term (an overfit risk), and, for PSI, a spread in the fit cohort below
+    narrow_psi_below (the HR covers a few PSI points). Sets cox_low_power, cox_events_per_term and psi_narrow on the
+    row."""
     out = []
+    r["cox_low_power"] = bool(s.cox_low_power_events > 0 and r["cox_events"] < s.cox_low_power_events)
+    if r["cox_low_power"]:
+        out.append(f"low power: {r['cox_events']} events (< {s.cox_low_power_events})")
     r["cox_events_per_term"] = epv = r["cox_events"] / n_terms if n_terms else NAN
     if s.cox_events_per_term > 0 and epv < s.cox_events_per_term:
         out.append(f"{epv:.1f} events per term (< {s.cox_events_per_term:g})")
@@ -411,19 +476,27 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     ok = np.ones(len(idx), bool)
     g = None
     notes = []
-    if use_expr:
-        g = np.asarray(host_base, float)[idx]
-        ok &= np.isfinite(g)
     C, used = None, list(need)
     if need:
         C = clinical.iloc[idx].reset_index(drop=True)
         used = _complete_columns(C, need, s, notes)
         for c in used:
             ok &= C[c].notna().to_numpy()
-    if len(used) < len(need):
-        m_used = CoxModel(model.expression, tuple(c for c in model.covariates if c in used), model.categorical,
-                          tuple(c for c in model.strata if c in used), model.scale, dict(model.baseline))
-        r["cox_model"] = m_used.describe(use_expr).replace("PSI", quantity, 1)
+    if use_expr:                  # host expression recorded for too few fit patients, or constant: left out, noted
+        g = np.asarray(host_base, float)[idx]
+        have = np.isfinite(g)     # over the cohort's fit patients, as for clinical variables: the same in every model
+        frac = float(have.mean()) if len(idx) else 1.0
+        out = "" if not len(idx) else ("no values" if not have.any() else
+                                       f"{frac:.0%} recorded" if frac < s.covariate_min_complete else
+                                       "constant" if np.ptp(np.round(g[have], s.round_decimals)) == 0 else "")
+        if out:
+            notes.append(f"host expression left out ({out})")
+            use_expr, g = False, None
+        else:
+            ok &= np.isfinite(g)
+    m_used = CoxModel(model.expression, tuple(c for c in model.covariates if c in used), model.categorical,
+                      tuple(c for c in model.strata if c in used), model.scale, dict(model.baseline))
+    r["cox_model"] = m_used.describe(use_expr).replace("PSI", quantity, 1)     # as fitted here
     r["cox_n_dropped"] = int((~ok).sum())
     tt, ee, xx = t[ok], e[ok], x[ok]
     # ---------------------------------------------------------------- Cox: the design
@@ -439,7 +512,7 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
         else:
             df, why = None, ("constant_expression" if len(g) >= 3 else why)
     strata_cols = []
-    if df is not None and need:
+    if df is not None and need and len(df):              # no patient with every variable: the gate below stops it
         strata_cols = _clinical_design(df, meta, notes, C[ok].reset_index(drop=True), model, used, s)
     n_off = coverage(xx, s.round_decimals)["off_modal"]
     r.update(cox_n=int(len(xx)), cox_events=int(ee.sum()),
@@ -450,8 +523,15 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
             n_off < s.min_off_modal:
         r["cox_status"] = "low_psi_variance" if low_var_fit else (why if df is None else "too_few_patients_or_events")
         return r, []
+    if s.cox_min_events_per_term > 0 and r["cox_events"] < s.cox_min_events_per_term * len(meta):
+        r.update(cox_status="too_few_events_per_term", cox_events_per_term=r["cox_events"] / len(meta),
+                 cox_n_terms=len(meta))
+        return r, []
+    r["cox_model"] += ridge_text(s, any(m["kind"] in ("numeric", "categorical") for m in meta),   # penalized: named
+                                 [m["term"] for m in meta if m["kind"] in ("psi", "expression")])
     fit = fit_cox(df, "psi10", {"gex_z": "expr"} if "gex_z" in df else None, ph=s.ph_test,
-                  refit_step_size=s.nr_refit_step_size, strata=strata_cols or None)
+                  refit_step_size=s.nr_refit_step_size, strata=strata_cols or None,
+                  penalizer=ridge_penalizer(df, meta, s, strata_cols))
     r.update(cox_status=fit["status"], cox_fit_note=fit.get("fit_note", ""), cox_fit_warning=fit.get("fit_warning", ""))
     if fit["status"] != "tested":
         return r, []
@@ -516,7 +596,7 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     idx = ep_pos[keep]
     t, e, x = np.asarray(time, float)[keep], np.asarray(event, int)[keep], g_base[idx]
     high = x > r["cutoff"]
-    flat = len(x) < 2 or not np.ptp(x) > 0
+    flat = len(x) < 2 or not np.ptp(np.round(x, s.round_decimals)) > 0
     # ---------------------------------------------------------------- KM
     r.update(km_n=len(x), n_low=int((~high).sum()), n_high=int(high.sum()), events_low=int(e[~high].sum()),
              events_high=int(e[high].sum()))
@@ -549,7 +629,7 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     sd = float(np.std(xx, ddof=1)) if len(xx) > 1 else 0.0
     r.update(cox_n=int(len(xx)), cox_events=int(ee.sum()), expr_sd=sd,
              expr_iqr=float(np.subtract(*np.percentile(xx, [75, 25]))) if len(xx) else NAN)
-    if not sd > 0:
+    if not sd > 0 or not np.ptp(np.round(xx, s.round_decimals)) > 0:    # constant up to floating-point noise
         r.update(cox_status="constant_expression", cox_notes="; ".join(notes))
         return r, []
     df = pd.DataFrame({"time": tt, "event": ee, "gex_z": (xx - xx.mean()) / sd})
@@ -559,7 +639,13 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     if r["cox_n"] < s.cox_min_n or r["cox_events"] < s.cox_min_events:
         r["cox_status"] = "too_few_patients_or_events"
         return r, []
-    fit = fit_cox(df, "gex_z", None, ph=s.ph_test, refit_step_size=s.nr_refit_step_size, strata=strata_cols or None)
+    if s.cox_min_events_per_term > 0 and r["cox_events"] < s.cox_min_events_per_term * len(meta):
+        r.update(cox_status="too_few_events_per_term", cox_events_per_term=r["cox_events"] / len(meta),
+                 cox_n_terms=len(meta))
+        return r, []
+    r["cox_model"] += ridge_text(s, any(m["kind"] in ("numeric", "categorical") for m in meta), ["expression"])
+    fit = fit_cox(df, "gex_z", None, ph=s.ph_test, refit_step_size=s.nr_refit_step_size, strata=strata_cols or None,
+                  penalizer=ridge_penalizer(df, meta, s, strata_cols))
     r.update(cox_status=fit["status"], cox_fit_note=fit.get("fit_note", ""), cox_fit_warning=fit.get("fit_warning", ""))
     if fit["status"] != "tested":
         return r, []

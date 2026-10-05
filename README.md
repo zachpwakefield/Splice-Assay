@@ -91,7 +91,7 @@ splice-assay panel demo/data --event SYN1:SE:1 --out figures/
 # or choose everything yourself
 splice-assay panel demo/data --event SYN1:SE:1 --cohort COH1 --cohort COH2 --endpoint DSS \
     --detail-covariate age --detail-covariate stage --baseline stage=I --out figures/
-splice-assay analyse demo/data --out results/  # statistics for every event x cohort x endpoint, as CSV
+splice-assay analyze demo/data --out results/  # statistics for every event x cohort x endpoint, as CSV
 ```
 
 An agent (or a new user) should read [AGENT_GUIDE.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/AGENT_GUIDE.md): the steps from data to report, how to read a
@@ -103,7 +103,7 @@ In Python:
 import splice_assay as sa
 
 ds = sa.Dataset.from_dir("demo/data")          # or sa.Dataset.from_tables(samples=df, psi=df, ...)
-res = sa.analyse(ds)                           # res.groups, res.survival, res.cox_terms
+res = sa.analyze(ds)                           # res.groups, res.survival, res.cox_terms
 clinical = sa.CoxModel().with_clinical(["age", "sex", "stage"], baseline={"stage": "I"})
 panel = sa.event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", gtf="demo/data/annotation.gtf",
                        detail=clinical, out_dir="figures/")    # panel.figure is a matplotlib Figure
@@ -149,7 +149,10 @@ Each part can instead have its own table. A separate table takes precedence over
 `--keep FILE` restricts any command to the patients listed in a table. The first column holds the IDs, or name the
 column with `--keep-column`.
 - **Which IDs match.** Patient IDs, sample IDs, or barcodes that start with either. TCGA aliquot barcodes such as
-  `TCGA-XX-0001-01A-11R-0000-07` select patient `TCGA-XX-0001`.
+  `TCGA-XX-0001-01A-11R-0000-07` select patient `TCGA-XX-0001`. An ID that is itself a patient or sample ID selects
+  only that one, so `1-2` does not also select patient `1`.
+- **IDs are text.** `00123` stays `00123`. A plain list without a header line also works: its first line is read as
+  an ID when it names a patient or sample (with a warning).
 - **What is kept.** All samples of a selected patient, so its normal samples stay for the tumour–normal views.
 - **Where it shows.** `validate` reports the subset, the probe report states it, and page titles end with
   "subset: <file>".
@@ -160,12 +163,17 @@ splice-assay probe data/ --gene EHMT2 --keep Her2_samples.tsv
 
 `--where COLUMN=VALUE` selects by a column of the clinical or samples table instead, for example
 `--where Subtype=Her2`.
-- **Matching.** Values match case-insensitively; `--where stage=II,III` accepts either value.
-- **Several conditions.** Repeat `--where`; all conditions must hold, and `--keep` can be added.
+- **Matching.** Values match case-insensitively, and numbers by value (`--where grade=1` matches a column read as
+  1.0); `--where stage=II,III` accepts either value. A missing value never matches.
+- **Several conditions.** Repeat `--where`; all conditions must hold (`--where stage=I,II --where stage=II,III`
+  keeps stage II), and `--keep` can be added.
+- **Tables keyed by sample.** Survival and clinical tables may be keyed by `sample_id`; they may list samples the
+  subset leaves out.
 - **What is kept.** All samples of a selected patient, as with `--keep`.
 
-Small subsets often have too few deaths for Cox (30 patients and 20 events by default). The KM tests still run, and
-the probe ranks by them when no Cox model can be fitted.
+Small subsets often have too few deaths. Cox needs 30 patients and 10 events by default, and the log-rank test 10
+patients per arm and 10 events; a subset that misses one gate gets only the other test (the probe then ranks by it),
+and one with fewer than 10 deaths gets neither. A Cox fit with fewer than 20 events runs but is marked low power (‡).
 
 ### Your own column names
 
@@ -260,8 +268,8 @@ per-sample outputs looks like this; `splice-assay example` writes three in `demo
   is not PSI and has its own rules: no 0/1 check, and a hit needs |Δ| > 0.20 (`hit_min_abs_delta`). Pages say "HIT
   index" where they would say PSI. See [docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md#event-types-and-their-values).
 - **The HIT index is left out by default.** HITindex reports it for every exon of every gene, a far larger set than
-  the splicing events, so `analyse` and `probe` skip HIT events unless `--include-hit` (`include_hit=True`). A HIT
-  event named with `--event` is always analysed and drawn. HIT-index events form q families of their own, so
+  the splicing events, so `analyze` and `probe` skip HIT events unless `--include-hit` (`include_hit=True`). A HIT
+  event named with `--event` is always analyzed and drawn. HIT-index events form q families of their own, so
   including them changes no PSI q value.
 
 ## Probing: when you are not sure what to look at
@@ -283,15 +291,19 @@ It writes:
 | `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame |
 | `pages/`, `probe.pdf` | One assay page per ranked event, then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF |
 
-Events measurable in at least one cohort come first. The ranking then orders events by these criteria in turn:
+Events measurable in at least one cohort come first. The ranking then orders events by these criteria in turn, with
+Cox counted only in fits that are not low power (at least 20 events):
 1. cohorts where the adjusted Cox p < 0.05;
 2. cohorts where the base Cox p < 0.05;
 3. cohorts with both a group hit and a survival hit;
 4. cohorts where the KM p < 0.05;
-5. the smallest p: adjusted Cox, else base Cox, else KM (when no Cox model can be fitted).
+5. the Cox hits in low-power fits (‡), adjusted, then base;
+6. the p of the best cohort: adjusted Cox, else base Cox, else KM (when no Cox model can be fitted).
 
 Each page shows that event's most promising cohorts (`--top`, default 3; `--top all` shows every cohort with a
-test, one row each) and every cohort in the forest.
+test, one row each) and every cohort in the forest. The best cohort and the page's cohorts are those with Cox
+p < 0.05 in a fit that is not low power, then in a low-power fit, then the other fits (those not low power first),
+each by adjusted Cox p.
 
 More than 6 cohorts are split over balanced pages (`_p1`, `_p2`, …, "page 1 of 3" in the title), each with the
 full forest. Change the split with the `cohorts_per_page` setting (0 = one page).
@@ -320,16 +332,16 @@ annotation, and checks against SpliceImpactR.
 | Setting | Default | Change with |
 |---|---|---|
 | Cohorts | all; pages show the most promising 3 | `--cohort`, `--top N` or `--top all` |
-| Endpoint | OS | `--endpoint` (repeatable in `probe`, or `all`) |
+| Endpoint | OS (`cox` needs one named) | `--endpoint` (repeatable in `probe`, or `all`) |
 | Groups | tumour vs normal | `--case`, `--reference` |
 | Subset | every patient | `--keep FILE`, `--where COLUMN=VALUE` |
-| Adjustment | host expression, plus age, sex and stage found in the clinical table | `--covariate`, `--no-adjust`, `--no-detail` |
+| Adjustment | host expression, plus age, sex and stage found in the clinical table | `--covariate`, `--no-adjust`, `--no-detail`; `--no-expression` drops expression from both models |
 | Baselines | stage I, female (a level with < 10 patients or no deaths joins its neighbour) | `--baseline stage=II`; settings `level_min_patients` |
-| Model notes | under 10 events per term; PSI IQR under 0.05 | settings `cox_events_per_term`, `narrow_psi_below` |
+| Model notes | under 20 events (low power, ‡); under 10 events per term; PSI SD under 0.05 | settings `cox_low_power_events`, `cox_events_per_term`, `narrow_psi_below` |
 | KM split | median | `--km-split mean` or `--km-split 0.5`; `--km-split-expression` for expression |
-| HIT-index events | left out of `analyse` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
+| HIT-index events | left out of `analyze` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
 | q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
-| PSI hazard ratio | per IQR of the cohort's PSI | `--hr-unit sd` (per SD) |
+| PSI hazard ratio | per SD of the cohort's PSI | `--hr-unit iqr` (per IQR) |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
@@ -339,54 +351,77 @@ annotation, and checks against SpliceImpactR.
 - **Names.** Columns named like `age`, `age_at_diagnosis`, `sex`, `gender`, `stage` or `ajcc_pathologic_stage` are
   used.
 - **Cleaning.**
-  - Stage is collapsed to its Roman numeral ("Stage IIA" becomes II).
+  - Stage is collapsed to its Roman numeral ("Stage IIA" becomes II); stage numbers work too (2 or "2B" becomes II).
   - Sex becomes female or male.
   - Other codes, such as "[Not Available]" or "missing", become missing.
 - **Variables missing in a cohort.** A variable recorded for fewer than 80% of a cohort's patients is left out of that
   cohort's model rather than shrinking it; the page says so. This is typical of stage in brain tumours.
 - **Rare categories.** A level with fewer than 10 patients in a cohort, or with no deaths, cannot be estimated, so it
   joins its neighbour: stage I with 2 patients becomes part of "I–II", which is then the reference. Other categories
-  join the most common level. The page lists each merge. Change the limit with `level_min_patients` (0 = never).
+  join the most common level; the most common level itself, when it has no deaths, joins the next most common. The
+  page lists each merge. Change the limit with `level_min_patients` (0 = never).
 - **Notes.** These warn without changing any result:
+  - fewer than 20 events (low power; ‡ after the CI in the forest);
   - fewer than 10 events per model term (an overfit risk);
-  - a PSI IQR (or SD, with `--hr-unit sd`) below 0.05 in the fit cohort, so the HR covers a few PSI points;
+  - a PSI SD (or IQR, with `--hr-unit iqr`) below 0.05 in the fit cohort, so the HR covers a few PSI points;
   - non-proportional hazards: a term's Schoenfeld test, or the KM split's, has p < 0.05, so the effect changes over
     follow-up. Pages mark such tests with † after the p (KM, model rows) or the CI (forest).
 
-  Settings `cox_events_per_term`, `narrow_psi_below`, `narrow_psi_measure` (`iqr` or `sd`) and `ph_note_below`
-  control them.
+  Settings `cox_low_power_events`, `cox_events_per_term`, `narrow_psi_below`, `narrow_psi_measure` (`sd` or `iqr`)
+  and `ph_note_below` control them.
 
 ## The Cox model
 
 - **Default model.** PSI (per 0.10) plus host-gene expression, z-scored within the cohort, whenever an expression
-  table is given; PSI alone otherwise.
+  table is given; PSI alone otherwise. Like a clinical variable, expression is left out of a cohort's model (PSI
+  alone, with a note) when it is recorded for fewer than 80% of the cohort's patients (none when the table has no row
+  for the host gene), or is constant.
 - **Adding clinical variables.** Name clinical columns as covariates:
   - numeric columns enter per SD of the cohort;
   - other columns enter as categories against their most common level, or against the level you name with
     `--baseline stage=I`;
-  - `--categorical` forces a numeric code to be treated as categories;
+  - `--categorical` enters a column as categories even when it is numeric (no need to repeat it with `--covariate`);
   - `--strata` gives a separate baseline hazard per level;
-  - `--no-expression` drops the expression term.
+  - `--no-expression` drops the expression term. The adjusted model (age, sex and stage found) is built on this
+    model, so it has no expression term either, and it keeps the strata.
 
 ```bash
-splice-assay analyse data/ --out results/ --covariate age --covariate stage --strata sex
+splice-assay analyze data/ --out results/ --covariate age --covariate stage --strata sex
 ```
 
-- **What the forest shows.** The HR per IQR of PSI from this model, with the model written under the axis. The HR per
-  IQR is the hazard ratio between a patient at the 75th and one at the 25th percentile of PSI in that cohort, with the
-  other variables held fixed.
-- **Per SD instead.** `--hr-unit sd` (setting `psi_hr_unit`) shows the HR per SD of PSI in the cohort on the pages,
-  in the probe and its overview. The tables hold both (`hr_per_iqr`, `hr_per_sd`, with their CIs).
+- **Regularization (opt-in).** `--ridge clinical` adds a ridge (L2) penalty λ/2·β² to the clinical terms;
+  `--ridge molecular` to PSI and host expression; `--ridge all` to every term. β is the log HR per SD (per level for
+  categories), and `--ridge-penalty` sets λ (default 1, modest: like a normal prior with SD 1 on each log HR, though a
+  sparse category level, which the data inform little, is shrunk more). It steadies models with few deaths or sparse
+  categories. Penalized terms are shrunk jointly toward HR 1 (a single HR can move away from 1 when terms are
+  correlated), and their CIs and p values are approximate; the model's name says so ("…; ridge λ 1 (clinical terms)").
+  With `clinical` or `all`, the shrunk covariates adjust PSI only partly: its HR stays closer to the HR without them,
+  so an association that full adjustment would weaken can survive it (docs/methods.md has the numbers).
+- **Deaths per term (opt-in).** `--min-events-per-term 5` fits a Cox model only with at least 5 events per estimated
+  term (below it: `too_few_events_per_term`). With few deaths per term the PSI p of a model with several clinical
+  terms is anti-conservative; whether to require more is your choice (also `cox_min_events`).
+
+- **What the forest shows.** The HR per SD of PSI from this model, with the model written under the axis. The HR per
+  SD is the hazard ratio for PSI one standard deviation (of that cohort's PSI) higher, with the other variables held
+  fixed.
+- **Per IQR instead.** `--hr-unit iqr` (setting `psi_hr_unit`) shows the HR per IQR on the pages, in the probe and its
+  overview: the hazard ratio between a patient at the 75th and one at the 25th percentile of PSI in that cohort. The
+  tables hold both (`hr_per_sd`, `hr_per_iqr`, with their CIs).
+- **Low power.** A fit with 10 to 19 events (`cox_min_events` 10, `cox_low_power_events` 20) runs, but it is marked:
+  ‡ after its CI in the forest, "low power" in its model's notes and `cox_low_power` in the tables. A p ≥ 0.05
+  there says little against an association.
 - **Terms table.** `cox_terms.csv` holds every term of every fitted model.
-- **The model band.** `panel --detail` adds the full model of each cohort shown to the figure, below the KM panels.
-  Each term gets an HR, a 95% CI and p, and the forests of the band share one axis.
+- **The model band.** `panel` adds the full model of each cohort shown to the figure, below the KM panels: the
+  page's model plus the age, sex and stage found in the clinical table. Each term gets an HR, a 95% CI and p, and the
+  forests of the band share one axis.
+  - `--no-detail` leaves it out. `--detail` shows the page's model alone when no age, sex or stage column is found.
   - `--detail-covariate` (with `--detail-categorical` and `--detail-strata`) adds clinical terms to the band only.
   - The cross-cohort forest then keeps the model every cohort supports. Clinical variables are often missing or
     coded differently between cohorts.
 - **Any number of cohorts.**
-  - With one or two cohorts at left, the models sit in a band below them.
-  - From three, each cohort's row carries its own model at the right, aligned on one axis, and the cross-cohort
-    forest moves below at full width.
+  - With one or two rows at left (one per event and cohort), the models sit in a band below them.
+  - From three rows, each row carries its own model at the right, aligned on one axis, and the cross-cohort forest
+    moves below at full width.
   - `--layout side` or `--layout stacked` forces either.
 - **One model on its own.** `splice-assay cox` prints and draws one model with all its terms.
 
@@ -425,26 +460,32 @@ models already adjust PSI for expression.
 
 ## Outputs
 
-- **Statistics.** `analyse` writes three tables. Every column is defined in [docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md).
+- **Statistics.** `analyze` writes three tables. Every column is defined in [docs/methods.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/methods.md).
   - `group_tests.csv`: one row per event × cohort.
   - `survival.csv`: one row per event × cohort × endpoint.
   - `cox_terms.csv`: one row per model term.
+  - `analysis.json` beside them records the Cox model and the settings, so `Results.read` restores both.
 - **Protein changes.** With a protein cache, `proteins --out` and the probe's `proteins.csv` hold one row per event
   (see [docs/proteins.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md)).
 - **Figures.** `panel` and `cox` write four kinds of file:
   - `<stem>.svg`, `.pdf` and `.png` (400 dpi);
   - `<stem>.csv`, with every plotted value;
-  - `<stem>.provenance.json`, with input hashes, settings, the model and versions.
+  - `<stem>.provenance.json`, with input hashes, settings, the models (the forest's and the model rows') and
+    versions. The hashes cover every input the drawn numbers depend on, including the PSI of the gene's other
+    events, whose tests set the q values.
 - **Reproducibility.** The same inputs, settings and library versions give byte-identical files.
 
 ### Figure options
 
 - **Highlighting.** `--highlight table.csv` marks forest cells with a short label, such as a tier letter. Its columns
   are `event_id`, `cohort`, `label`, and optionally `endpoint` and `colour`. `--highlight-title Tier` names the
-  column.
+  column. A cohort that is not in the data is an error; with `--keep` or `--where` its rows are skipped, with a
+  warning.
 - **Batch figures.** `splice-assay panels data/ --spec panels.csv` makes many figures from a table.
   - Columns: `events` and `cohorts` (both separated by `;`), `endpoint`, and optionally `stem`.
   - The statistics are computed and the GTF is read only once.
+  - No model band unless asked: `--detail` adds it as `panel` draws it (the page's model plus the age, sex and stage
+    found), and `--detail-covariate` adds the terms you name.
 - **Two events.** Two events of the same gene can share a figure, for example two retained introns.
 - **Smaller GTF.** `splice-assay gtf-subset gencode.gtf.gz --events my_data/psi.csv --out small.gtf.gz` keeps only the
   records near your events.
@@ -454,13 +495,14 @@ models already adjust PSI for expression.
 Every threshold has a default taken from the analysis these figures were designed for. You can change any of them
 with a JSON file (`--settings my.json`) or in Python (`sa.Settings(min_pairs=5)`). The main defaults:
 
-- **Groups.** 10 pairs for the paired test; 10 case and 10 reference samples for the unpaired test. A hit needs
+- **Groups.** 10 pairs for the paired test; 10 case and 10 reference patients for the unpaired test (a patient's
+  several samples in one group, e.g. replicate aliquots, enter as their mean). A hit needs
   p < 0.05 and |Δ median PSI| > 0.10, and must be robust to PSI values of exactly 0 or 1. For the HIT index, a hit
   needs |Δ| > 0.20 and there is no 0/1 check.
 - **Survival.**
   - PSI observed in at least 50% of the survival samples, with at least 10 values away from the mode.
   - KM: split at the median (`km_split`: `median`, `mean` or a value), 10 patients per arm and 10 events.
-  - Cox: 30 patients and 20 events.
+  - Cox: 30 patients and 10 events; a fit with fewer than 20 events is marked low power (‡).
 
 ## Scope and limits
 

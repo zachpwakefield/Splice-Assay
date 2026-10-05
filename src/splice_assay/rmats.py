@@ -151,13 +151,24 @@ def import_rmats(folder, b1, b2=None, counting: str = "JCEC", event_types=EVENT_
     dup = set(n1) & set(n2 or [])
     if dup or len(set(n1)) < len(n1) or (n2 and len(set(n2)) < len(n2)):
         raise InputError("rMATS sample names must be unique across b1 and b2")
-    ev, ps = [], []
+    ev, ps, seen = [], [], []
     for t in event_types:
         f = folder / f"{t.upper()}.MATS.{counting}.txt"
         if not f.exists():
             continue
+        seen.append(t.upper())
+        try:
+            no_rows = pd.read_csv(f, sep="\t", nrows=1).empty
+        except pd.errors.EmptyDataError:                 # not even a header line: a broken output
+            raise InputError(f"{f}: the file is empty (rMATS writes a header line even when it finds no event)") \
+                from None
+        if no_rows:                                      # rMATS writes every type's file, only a header when it
+            continue                                     # found no event of that type
         ev.append(read_events(folder, [t], source=counting, prefix=prefix, mxe_psi_exon=mxe_psi_exon))
         ps.append(read_psi(f, n1, n2, prefix))
-    if not ev:
+    if not seen:
         raise InputError(f"{folder}: no *.MATS.{counting}.txt files")
+    if not ev:
+        raise InputError(f"{folder}: no rMATS events found in the {counting} files of {', '.join(seen)} (each holds "
+                         "only a header)")
     return pd.concat(ev, ignore_index=True), pd.concat(ps, ignore_index=True)

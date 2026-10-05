@@ -1,5 +1,100 @@
 # Changelog
 
+## 0.2.0 (2026-10-04)
+
+- **Naming.** `analyze` is the command and the Python function (`sa.analyze`, `analyze_expression`); the
+  earlier spelling `analyse` still works as an alias.
+- **Options.**
+  - `--ridge clinical|molecular|all` (`cox_ridge`) adds an opt-in ridge penalty λ/2·β² to the clinical terms, to PSI
+    and host expression, or to all terms (β per SD, per level for categories); `--ridge-penalty` (`cox_ridge_penalty`,
+    default 1) sets λ. Penalized models are named so (tables, pages, the overview's caption), and the probe report
+    says which terms the penalty reached. Penalized CIs and p values are approximate, and with `clinical` or `all`
+    the shrunk covariates adjust PSI only partly (docs/methods.md).
+  - `--min-events-per-term N` (`cox_min_events_per_term`, default off) fits a Cox model only with at least N events per
+    estimated term (`too_few_events_per_term`; the probe report counts such fits, and a model row says why it is
+    missing).
+- **Changes in results.**
+  - The PSI (and HIT-index) hazard ratio is shown per SD of the cohort by default (`psi_hr_unit = "sd"`;
+    `--hr-unit iqr` for the HR per IQR). The narrow-range note follows the unit (SD below 0.05). The tables hold both
+    units, as before.
+  - Cox needs 10 events (`cox_min_events`, was 20). A fit with fewer than 20 events (`cox_low_power_events`) runs
+    and is marked low power: a note, `cox_low_power` in the tables, ‡ after its forest CI, a line in the probe
+    report, ‡ after p in its ranked table, and `best_low_power` in `events.csv`. The probe ranks events by Cox hits
+    in fits that are not low power; low-power hits only break ties, before the smallest p (`adj_cox_p05_low_power`,
+    `cox_p05_low_power`, "4 (1‡)" in the report), and the best cohort and the cohorts on each page prefer fits that
+    are not low power. A cohort with 10–19 deaths cannot push an event ahead of one with more evidence from
+    better-powered fits.
+  - Host expression follows the rule for clinical variables: recorded for fewer than 80% of a cohort's fit patients
+    (none when the expression table has no row for the host gene), or constant, it is left out and the Cox model is
+    PSI alone there, with a note ("host expression left out (…)"); such cells were not fitted (`no_host_expression`,
+    `constant_expression`). Reports, printouts and the forest name the models as fitted.
+  - The automatic clinical adjustment reads stage numbers (1–4, "02", "2B", 2.0) as stages I–IV in a column named as
+    an overall stage; they were missing. A T, N or M stage or a summary stage (SEER) is not taken for the stage.
+    `validate`, the probe report and `panel` print what it read ("stage = stage (I 254, II 169, III 107)"). It never
+    rewrites a column the page's or probe's own model uses, so the forest is the same with or without model rows.
+  - The unpaired (all-samples) test compares one value per patient: a patient's several samples in one group (e.g.
+    replicate aliquots) enter with their mean. `min_group` counts patients; new columns `unpaired_n_case_samples` and
+    `unpaired_n_reference_samples` count the samples behind them. Data with one sample per patient and group give the
+    same results as before.
+  - Mann–Whitney ranks and the constant check use values rounded to 12 decimals, as every other comparison does.
+  - The 0/1 check is `fail`, not `untestable`, when enough values remain but none differ.
+  - A most common category without events merges into the next most common one, so its Cox fit no longer fails.
+  - The default adjusted model is the base model plus the age, sex and stage found: `--no-expression` now applies to
+    it too (`probe` and `panel`), and `panel`'s model rows keep the page's covariates and strata (a variable the page
+    already has, e.g. `--covariate gender`, is not added again as `sex`). `panel --detail` keeps the adjustment, and
+    `panels --detail` now draws the same model rows as `panel` (it showed the page's model alone).
+- **Fixes.**
+  - Keep lists are read as text (`00123` no longer selects patient `123`); a list without a header keeps its first
+    ID; an empty or unreadable keep file is an input error.
+  - Repeated `--where` conditions on one column must all hold, as documented (they were combined into one).
+    `--where` matches numbers by value (`grade=1` matches a column read as 1.0), and a missing value never matches.
+  - A keep-list ID that is itself a patient or sample ID selects only that patient (`1-2` no longer also selects
+    patient `1`); another ID selects the patient of its longest leading part that is one (TCGA barcodes).
+  - Survival and clinical tables keyed by `sample_id` work with `--keep` and `--where`.
+  - A Cox cohort without a patient complete for every covariate is a gate, not a crash.
+  - `import-rmats` skips an event type whose MATS file has no events instead of stopping (a file without even a
+    header line is an input error).
+  - `import-hitindex`: genes sharing a symbol are ordered and drawn each on its own; `--gene` reads quoted IDs.
+  - `panel`, `panels` and `probe` with `--table psi=FILE` read the folder's events table.
+  - A highlight row for a cohort not in the data is an input error, not a crash; a cohort that `--keep` or
+    `--where` left out is skipped with a warning.
+  - A bad `--settings` file is an input error, and `validate` checks the settings too.
+  - `--categorical COL` (and `--detail-categorical`) adds COL as a covariate; on its own it was ignored. A column
+    named both as a covariate and a stratum is an input error, not a traceback.
+  - Kaplan–Meier panels draw with the oldest versions allowed (matplotlib 3.7.0, numpy 1.24, pandas 2.1), where
+    they failed with "ufunc 'isfinite' not supported".
+  - `event_panel` and `cox_model_figure` refuse a `model` other than the one their `results` were computed with
+    (the page would name one model and draw another's numbers), and `event_panel` names the cohorts its `results`
+    do not cover instead of failing with a KeyError.
+  - `min_group` or `min_pairs` of 0 no longer crash on an event without values.
+  - Kaplan–Meier curve labels are kept apart when both curves end at the same survival (e.g. both at 0); they were
+    drawn on each other.
+  - The probe report's host-expression line names every cohort with p < 0.05 (it stopped at six), ‡ marking low
+    power; its low-power note names fits with p < 0.05 in the adjusted model too, as the ranking uses them.
+  - The probe no longer raises pandas' FutureWarning on downcasting in `fillna` (real data, pandas ≥ 2.2).
+- **Labels and records.**
+  - The probe report and the `cox` figure and printout name each model as fitted (no host expression with
+    `--no-expression`; a covariate left out of a cohort is not named; the HIT index is called so).
+  - The probe report calls settings "relaxed gates" only when a minimum a test needs is lowered (now including
+    `low_psi_variance_sd`); a ridge, another HR unit or a stricter minimum is listed without that caution.
+  - `analyze` writes `analysis.json` (model and settings), and `Results.read` restores them.
+  - Provenance: `call.model` is the forest's model, the clinical columns of both models are hashed, and so are the
+    PSI of the gene's other events (`psi_q_family`); the `cox` figure hashes the expression it adjusts for, and its
+    q family when it is given gene-wide results.
+  - The case-vs-reference view's CSV names the patient behind each point (`patient_id`, `n_samples`), and `validate`
+    notes patients with several samples of one group.
+  - The `cox` figure's CSV has a `header` row with the model, patients, events and low power it prints.
+  - The forest's CSV holds `ph_p` and `ph_marked`; `q_marked` and `ph_marked` follow a drawn CI.
+  - Protein changes: a region holding the stop codon (the three nucleotides after the last coding one) is not
+    called 3′ UTR; identical proteins from a coding event are not said to lie outside the coding sequence.
+  - The gene-track warning gives the real reason when one transcript is not enough for the collapsed model.
+- **Packaging.** `lifelines>=0.29.0` (0.27.8 and 0.28 fail to import with SciPy ≥ 1.14) and `pandas>=2.1`. CI tests
+  the minimum versions (`.github/minimum-versions.txt`); the publish workflow tests the built wheel, with the newest
+  and the minimum versions, before uploading.
+- **Docs.** The panel and `cox` examples name `--out` and `--endpoint`; page suffixes and the stacked layout's rule
+  are described as they are. The agent guide asks to compare `adj_cox_n` with `cox_n` before reading a change in p
+  after adjustment.
+
 ## 0.1.1 (2026-10-02)
 
 - **Install guide.** The README's install section covers the PyPI release: a virtual environment, checking the

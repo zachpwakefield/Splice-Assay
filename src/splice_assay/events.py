@@ -27,7 +27,7 @@ PSI_MEANING = {"SE": "PSI = inclusion", "RI": "PSI = retention", "A3SS": "PSI = 
                "A5SS": "PSI = long form", "MXE": "PSI = filled exon", "AFE": "PSI = first-exon use",
                "ALE": "PSI = last-exon use", "HIT": "HIT index of the exon"}
 QUANTITY = {"HIT": "HIT index"}             # the measured value of an event type (PSI unless named here)
-OPT_IN = {"HIT"}                            # analysed only on request (include_hit): one per exon, a far larger set
+OPT_IN = {"HIT"}                            # analyzed only on request (include_hit): one per exon, a far larger set
 
 
 def quantity(event_type) -> str:
@@ -37,8 +37,8 @@ def quantity(event_type) -> str:
 
 def opt_in(event_type) -> bool:
     """Whether events of this type are left out unless asked for: the HIT index is reported for every exon of every
-    gene, a far larger set than the splicing events, so analyse and probe skip it unless include_hit (a HIT event
-    named explicitly is always analysed)."""
+    gene, a far larger set than the splicing events, so analyze and probe skip it unless include_hit (a HIT event
+    named explicitly is always analyzed)."""
     return str(event_type).upper() in OPT_IN
 
 

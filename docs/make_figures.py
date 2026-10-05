@@ -43,7 +43,7 @@ def main() -> None:
         data, gtf, proteins = Path(tmp) / "data", Path(tmp) / "data" / "annotation.gtf", Path(tmp) / "proteins"
         ds = sa.Dataset.from_dir(data)
         # the README figure: two cohorts, the model band below
-        res = sa.analyse(ds)
+        res = sa.analyze(ds)
         model = sa.CoxModel().with_clinical(("age", "sex", "stage"), baseline={"stage": "I", "sex": "female"})
         sa.event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", gtf=gtf, results=res, detail=model,
                        proteins=proteins, out_dir=tmp, stem="example_panel", settings=s)
@@ -51,7 +51,7 @@ def main() -> None:
         # the guide page: three cohorts as a probe draws them (pairs; too few pairs; no normal samples)
         dsa, adjusted, _ = auto_clinical(ds)
         gene = list(dsa.events.index[dsa.events.gene.eq("SYN1")])
-        res = sa.analyse(dsa, events=gene, endpoints=["OS"], settings=s)
+        res = sa.analyze(dsa, events=gene, endpoints=["OS"], settings=s)
         sa.event_panel(dsa, "SYN1:SE:1", ["COH1", "COH2", "COH4"], "OS", gtf=gtf, results=res, detail=adjusted,
                        proteins=proteins, out_dir=tmp, stem="guide_page", settings=s)
         sa.expression_panel(dsa, "SYN1", ["COH1", "COH2", "COH4"], "OS", model=adjusted, out_dir=tmp,

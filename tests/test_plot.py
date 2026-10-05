@@ -20,7 +20,7 @@ def test_single_event_panel(ds, results, gtf_path, tmp_path):
     for c in f.index:
         assert f.at[c, "unpaired_delta_median"] == pytest.approx(tn.loc[("SYN1:SE:1", c), "unpaired_delta_median"],
                                                                  nan_ok=True)
-        assert f.at[c, "hr_per_iqr"] == pytest.approx(sv.loc[("SYN1:SE:1", c, "OS"), "hr_per_iqr"], nan_ok=True)
+        assert f.at[c, "hr_per_sd"] == pytest.approx(sv.loc[("SYN1:SE:1", c, "OS"), "hr_per_sd"], nan_ok=True)
     # COH1: pairs and all samples; COH2 has 6 pairs: all samples only
     assert set(t[t.panel.eq("all_samples")].tag) == {"SYN1:SE:1|COH1", "SYN1:SE:1|COH2"}
     assert set(t[t.panel.eq("pairs")].tag) == {"SYN1:SE:1|COH1"}
@@ -84,7 +84,7 @@ def test_cox_model_figure(ds, tmp_path):
     p = sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=sa.CoxModel(covariates=("age", "sex", "stage")),
                             settings=FAST, out_dir=tmp_path)
     terms = p.table[p.table.panel.eq("term")]
-    assert list(terms.kind[:3]) == ["psi_iqr", "expression", "numeric"] and set(terms.term) >= {"sex", "stage"}
+    assert list(terms.kind[:3]) == ["psi_sd", "expression", "numeric"] and set(terms.term) >= {"sex", "stage"}
     assert p.paths["png"].exists()
     with pytest.raises(InputError, match="not fitted"):
         sa.cox_model_figure(ds, "SYN1:SE:1", "COH4", "DSS", settings=sa.Settings(cox_min_events=10_000))
@@ -133,6 +133,29 @@ def test_model_band_reports_cells_it_cannot_fit(ds, results):
     strict = sa.Settings(formats=("svg",), dpi=100, cox_min_events=10_000)
     p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", results=results, detail=True, settings=strict)
     assert "cox_detail_not_fitted" in set(p.table.panel)
+    # the reason quotes the settings of the fit, not the page's
+    from splice_assay.plot.model import model_terms
+    res = sa.analyze(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"],
+                     settings=sa.Settings(cox_min_events_per_term=1000))
+    with pytest.raises(InputError, match=r"too few events per term \(\d+ events for 2 terms; needs 1000 per term\)"):
+        model_terms(ds, "SYN1:SE:1", "COH1", "OS", results=res)
+
+
+def test_expression_rows_say_why_a_model_was_not_fitted(ds):
+    g = sa.expression_panel(ds, "SYN1", ["COH1"], "OS", settings=FAST.replace(cox_min_events_per_term=1000))
+    msg = g.table[g.table.panel.eq("gex_cox_detail_not_fitted")].message.tolist()
+    assert len(msg) == 1 and msg[0].startswith("not fitted: too few events per term (") and \
+        msg[0].endswith(" events for 1 term; needs 1000 per term)")
+
+
+def test_the_forest_names_the_penalty_of_the_results_it_shows(ds):
+    """results= fitted with a ridge: the forest's model line says so, whatever the page's settings."""
+    clinical = sa.CoxModel().with_clinical(("age",))
+    res = sa.analyze(ds, events=["SYN1:SE:1"], endpoints=["OS"], settings=FAST.replace(cox_ridge="clinical"),
+                     model=clinical)
+    p = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", results=res, settings=FAST)
+    assert p.table[p.table.panel.eq("forest_axis")].cox_model.iloc[0] == \
+        "Cox: PSI + host expression + age; ridge λ 1 (clinical terms)"
 
 
 def test_stacked_layout_for_three_or_more_cohorts(ds, results):
@@ -142,7 +165,7 @@ def test_stacked_layout_for_three_or_more_cohorts(ds, results):
                        settings=FAST)
     assert set(p.table[p.table.panel.eq("cox_detail")].tag) == {f"SYN1:SE:1|COH{i}" for i in (1, 2, 3)}
     axes = p.figure.axes
-    forest_hr = [a for a in axes if a.get_xlabel().startswith("HR per IQR")][0]
+    forest_hr = [a for a in axes if a.get_xlabel().startswith("HR per SD")][0]
     models = [a for a in axes if a.get_xlabel() == "Hazard ratio (95% CI)"]
     assert len(models) == 3
     # the models are aligned (same x position and width) and share one axis; the forest sits below them all
@@ -176,6 +199,19 @@ def test_km_header_notes_non_proportional_hazards():
         ax = fig.add_axes([0.2, 0.3, 0.7, 0.5])
         K.draw(fig, ax, t, e, high, dict(row, km_ph_p=ph), "Overall survival", [], "t", sa.Settings())
         assert any("non-proportional hazards (p 0.003)" in x.get_text() for x in ax.texts) == shown
+
+
+def test_km_end_labels_stay_apart_when_the_curves_end_level():
+    """Both arms reach 0 (every patient died): the two labels are still nudged apart, not drawn on each other."""
+    from matplotlib.figure import Figure
+    from splice_assay.plot import km as K
+    t, e, high = np.arange(1.0, 9.0), np.ones(8, int), np.arange(8) % 2 == 1
+    row = dict(logrank_hr=1.0, km_p=0.9, events_high=4, events_low=4, cutoff=0.5)
+    fig = Figure(figsize=(3, 3))
+    ax = fig.add_axes([0.2, 0.3, 0.7, 0.5])
+    K.draw(fig, ax, t, e, high, row, "Overall survival", [], "t", sa.Settings())
+    y = {x.get_text(): x.get_position()[1] for x in ax.texts if x.get_text() in ("Low PSI", "High PSI")}
+    assert len(y) == 2 and y["High PSI"] - y["Low PSI"] >= 0.09 - 1e-12 and min(y.values()) >= 0.04 - 1e-12
 
 
 def _texts(p):
@@ -249,25 +285,29 @@ def test_q_marks(ds, tmp_path):
     assert "*: q < 0.05" in " ".join(t.get_text() for t in fig.texts)
 
 
-def test_hr_per_sd_on_the_pages(ds, tmp_path, capsys):
-    """psi_hr_unit = "sd" (--hr-unit sd) shows the HR per SD in the forest, the model rows, the probe and its report."""
+@pytest.mark.parametrize("unit", ["sd", "iqr"])
+def test_hr_unit_on_the_pages(ds, tmp_path, capsys, unit):
+    """The HR per SD (the default) or per IQR (psi_hr_unit, --hr-unit iqr) in the forest, the model rows, the probe
+    and its report."""
     from splice_assay.cli import main
     from splice_assay.probe import probe
-    s = FAST.replace(psi_hr_unit="sd")
+    s = FAST if unit == "sd" else FAST.replace(psi_hr_unit="iqr")
+    U, other = unit.upper(), ("iqr" if unit == "sd" else "sd")
     p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=s, detail=sa.CoxModel().with_clinical(("age",)))
-    assert "HR per SD\nof PSI (95% CI)" in [a.get_xlabel() for a in p.figure.axes]
+    assert f"HR per {U}\nof PSI (95% CI)" in [a.get_xlabel() for a in p.figure.axes]
     f = p.table[p.table.panel.eq("forest")]
-    assert "hr_per_sd" in f and "hr_per_iqr" not in f and f.hr_per_sd.notna().any()
-    assert any(str(x).startswith("PSI (per SD, ") for x in p.table[p.table.panel.eq("cox_detail")].label)
+    assert f"hr_per_{unit}" in f and f"hr_per_{other}" not in f and f[f"hr_per_{unit}"].notna().any()
+    assert any(str(x).startswith(f"PSI (per {U}, ") for x in p.table[p.table.panel.eq("cox_detail")].label)
     res = probe(ds, genes=["SYN1"], settings=s, adjusted=None, out_dir=tmp_path / "p", max_pages=1,
                 log=lambda *_: None)
-    assert "best_hr_per_sd" in res.events and "| HR per SD | p |" in res.paths["report"].read_text()
+    assert f"best_hr_per_{unit}" in res.events and f"| HR per {U} | p |" in res.paths["report"].read_text()
     from splice_assay import example
     example.write(tmp_path / "ex")
-    assert main(["probe", str(tmp_path / "ex" / "data"), "--gene", "SYN2", "--hr-unit", "sd", "--no-adjust",
-                 "--out", str(tmp_path / "cli"), "--max-pages", "1", "--settings", str(_fast_json(tmp_path))]) == 0
+    assert main(["probe", str(tmp_path / "ex" / "data"), "--gene", "SYN2", "--no-adjust", "--out",
+                 str(tmp_path / "cli"), "--max-pages", "1", "--settings", str(_fast_json(tmp_path))]
+                + ([] if unit == "sd" else ["--hr-unit", "iqr"])) == 0
     import pandas as pd
-    assert "best_hr_per_sd" in pd.read_csv(tmp_path / "cli" / "events.csv").columns
+    assert f"best_hr_per_{unit}" in pd.read_csv(tmp_path / "cli" / "events.csv").columns
     capsys.readouterr()
 
 
@@ -275,3 +315,141 @@ def _fast_json(tmp_path):
     p = tmp_path / "fast.json"
     p.write_text('{"formats": ["png"], "dpi": 60}')
     return p
+
+
+def test_the_cox_figure_names_the_model_as_fitted(tables):
+    """The header is the model fitted in that cohort: a covariate left out there is not named, and the HIT index is
+    called so."""
+    cl = tables["clinical"].copy()
+    coh1 = sorted(set(tables["samples"].patient_id[tables["samples"].cohort.eq("COH1")]))
+    cl.loc[cl.patient_id.isin(coh1[::2]), "stage"] = np.nan                     # stage recorded for half of COH1
+    ds = sa.Dataset.from_tables(**dict(tables, clinical=cl))
+    f = sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=sa.CoxModel(covariates=("age", "stage")),
+                            settings=FAST)
+    assert next(t for t in _texts(f) if t.startswith("Cox: ")).startswith("Cox: PSI + host expression + age · ")
+    head = f.table[f.table.panel.eq("header")].iloc[0]                          # the header's numbers in the CSV
+    assert head.cox_model == "PSI + host expression + age" and head.cox_n > 0 and not head.cox_low_power
+    assert f.provenance["inputs_sha256"]["expression"]                          # the model adjusts for it
+    h = sa.cox_model_figure(ds, "SYN3:HIT:0002", "COH1", "OS", model=sa.CoxModel(covariates=("age",)), settings=FAST)
+    assert next(t for t in _texts(h) if t.startswith("Cox: ")).startswith("Cox: HIT index + host expression + age · ")
+
+
+def test_provenance_records_the_forest_model_and_the_q_family(ds, tables):
+    """call.model is the forest's model (call.detail_model the model rows'); the PSI of the gene's other events, which
+    sets the printed q values, is hashed."""
+    m = sa.CoxModel().with_clinical(("age",))
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, detail=m)
+    assert p.provenance["call"]["model"] == sa.CoxModel().to_dict()
+    assert p.provenance["call"]["detail_model"] == m.to_dict()
+    assert p.provenance["input_rows"]["psi_q_family"] == 2                      # SYN1:A3SS:1 and SYN1:RI:1
+    psi = tables["psi"].copy()
+    other = psi.event_id.eq("SYN1:RI:1")
+    psi.loc[other, "psi"] = psi.loc[other, "psi"].to_numpy()[::-1]
+    q = sa.event_panel(sa.Dataset.from_tables(**dict(tables, psi=psi)), "SYN1:SE:1", ["COH1"], "OS", settings=FAST,
+                       detail=m)
+    a, b = p.provenance["inputs_sha256"], q.provenance["inputs_sha256"]
+    assert a["psi"] == b["psi"] and a["psi_q_family"] != b["psi_q_family"]
+
+
+def test_the_forest_table_holds_the_proportional_hazards_p(ds, results):
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST.replace(ph_note_below=1.0), results=results)
+    f = p.table[p.table.panel.eq("forest")].set_index("cohort")
+    sv = results.survival[results.survival.event_id.eq("SYN1:SE:1") & results.survival.endpoint.eq("OS")]
+    for r in sv.itertuples():
+        if r.cohort in f.index and r.cox_status == "tested" and np.isfinite(r.hr_per_sd):
+            assert f.at[r.cohort, "ph_p"] == r.ph_p and f.at[r.cohort, "ph_marked"]
+
+
+def test_a_highlight_row_for_an_absent_cohort(ds, results, tables):
+    """A cohort not in the data is an input error (a typo), unless a subset left it out: then it is skipped."""
+    marks = {("SYN1:SE:1", "COH2"): "B", ("SYN1:SE:1", "COH1"): "A"}
+    with pytest.raises(InputError, match="highlight: cohort.s. coh9 not in the data"):
+        sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results,
+                       highlight={("SYN1:SE:1", "coh9"): "B"})
+    sub = sa.Dataset.from_tables(**tables, where=["cohort=COH1"])
+    with pytest.warns(UserWarning, match="COH2 not in the subset"):
+        p = sa.event_panel(sub, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, highlight=marks)
+    with pytest.raises(InputError, match="cohort.s. coh9 not in the data"):     # a typo is one also under a subset
+        sa.event_panel(sub, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, highlight={("SYN1:SE:1", "coh9"): "B"})
+    f = p.table[p.table.panel.eq("forest")]
+    assert "COH2" not in set(f.cohort) and f.set_index("cohort").at["COH1", "label"] == "A"
+
+
+def test_the_group_view_table_names_each_patient(ds, results):
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results)
+    pts = p.table[p.table.panel.eq("all_samples")]
+    smp = ds.samples[ds.samples.cohort.eq("COH1") & ds.samples.role.eq("case")]
+    case = pts[pts.group.eq("case")]
+    assert set(case.patient_id) <= set(smp.patient_id) and case.n_samples.eq(1).all()
+    psi = ds.psi.loc["SYN1:SE:1"].reindex(smp.set_index("patient_id").loc[case.patient_id, "sample_id"]).to_numpy()
+    assert np.allclose(case.psi.to_numpy(float), psi)
+
+
+def test_a_model_other_than_the_results_model_is_refused(ds, results):
+    """The page would name one model and draw another's numbers."""
+    other = sa.CoxModel(expression=False)
+    with pytest.raises(InputError, match=r"the model \(PSI\) is not the one results= was computed with \(PSI \+ host "
+                                         r"expression; they differ in expression: False vs True\)"):
+        sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results, model=other)
+    with pytest.raises(InputError, match="is not the one results= was computed with"):
+        sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST, results=results, model=other)
+    one = sa.analyze(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"])
+    with pytest.raises(InputError, match="results= does not cover cohort.s. COH2 for OS"):
+        sa.event_panel(ds, "SYN1:SE:1", ["COH1", "COH2"], "OS", settings=FAST, results=one)
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results, model=sa.CoxModel())
+    assert p.provenance["call"]["model"] == sa.CoxModel().to_dict()
+
+
+def test_the_cox_figure_hashes_the_q_family_of_its_results(ds, results):
+    f = sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST, results=results)
+    assert f.provenance["input_rows"]["psi_q_family"] == 2          # SYN1:A3SS:1 and SYN1:RI:1 share its q family
+    alone = sa.cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST)
+    assert alone.provenance["input_rows"]["psi_q_family"] is None
+
+
+def test_low_power_fits_are_marked_on_the_page(ds, results):
+    """‡ follows the forest CI of a fit with fewer than cox_low_power_events events; the legend says so."""
+    from splice_assay.plot.forest import LOW_MARK
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST.replace(cox_low_power_events=10_000),
+                       results=results)
+    f = p.table[p.table.panel.eq("forest")]
+    drawn = f[f.hr_per_sd.notna()]
+    assert len(drawn) and drawn.low_power_marked.all()
+    assert any(LOW_MARK in t.get_text() for a in p.figure.axes for t in a.texts)
+    assert "fewer than 10000 events: low power" in _texts(p)
+    q = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST.replace(cox_low_power_events=0), results=results)
+    assert not q.table[q.table.panel.eq("forest")].low_power_marked.any()
+    assert not any(LOW_MARK in t.get_text() for a in q.figure.axes for t in a.texts)
+
+
+def test_no_host_expression_gives_a_psi_only_fit(tables):
+    """Without expression for the host gene the Cox model is PSI alone, with a note, and the page names it so."""
+    ex = tables["expression"]
+    ds = sa.Dataset.from_tables(**dict(tables, expression=ex[ex.gene.ne("SYN1")]))
+    sv = sa.analyze(ds, events=["SYN1:SE:1"], endpoints=["OS"]).survival
+    t = sv[sv.cox_status.eq("tested")]
+    assert len(t) and t.cox_model.eq("PSI").all()
+    assert t.cox_notes.str.contains("host expression left out (no values)", regex=False).all()
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST)
+    assert p.table[p.table.panel.eq("forest_axis")].cox_model.iloc[0] == "Cox: PSI"
+    # expression missing for one cohort only: PSI alone there, and the forest note says where
+    s = tables["samples"]
+    coh3 = set(s.sample_id[s.cohort.eq("COH3")])
+    ds3 = sa.Dataset.from_tables(**dict(tables, expression=ex[~ex.sample_id.isin(coh3)]))
+    p3 = sa.event_panel(ds3, "SYN1:SE:1", ["COH1"], "OS", settings=FAST)
+    note = p3.table[p3.table.panel.eq("forest_axis")].cox_model.iloc[0]
+    assert note.startswith("Cox: PSI + host expression; PSI alone in COH3"), note
+
+
+def test_the_forest_note_names_fits_without_expression(tables):
+    """Two events of one page, one of them without expression for its host gene: the note says where PSI is alone."""
+    from splice_assay.analysis import describe_model
+    ev = tables["events"].copy()
+    ev["expression_gene"] = np.where(ev.event_id.eq("SYN1:A3SS:1"), "NOPE", ev.gene)      # others: their own gene
+    ds = sa.Dataset.from_tables(**dict(tables, events=ev))
+    p = sa.event_panel(ds, ["SYN1:SE:1", "SYN1:A3SS:1"], ["COH1"], "OS", settings=FAST)
+    note = p.table[p.table.panel.eq("forest_axis")].cox_model.iloc[0]
+    assert note.startswith("Cox: PSI + host expression; PSI alone in "), note
+    assert describe_model(sa.CoxModel(), ds, ["SYN1:SE:1", "SYN1:A3SS:1"]) == \
+        "PSI + host expression; PSI alone where the host gene has no expression"
+    assert describe_model(sa.CoxModel(), ds, ["SYN1:A3SS:1"]) == "PSI"

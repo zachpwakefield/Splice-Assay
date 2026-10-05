@@ -800,6 +800,20 @@ def _cds_ends(tx: pd.DataFrame, strand: str) -> tuple[int, int] | None:
     return (lo, hi) if strand == "+" else (hi, lo)            # (first coding nt, last coding nt), transcript order
 
 
+def _stop_codon(exons: list[Iv], last: int, strand: str) -> list[int]:
+    """The genomic positions of the stop codon: the three nucleotides after the last coding one, in transcript order
+    (the cache's coding coordinates leave the stop codon out, the GENCODE convention), across an exon junction if
+    need be; [] when the transcript ends first (no annotated stop)."""
+    out = []
+    for a, b in (exons if strand == "+" else exons[::-1]):
+        pos = range(max(a, last + 1), b + 1) if strand == "+" else range(min(b, last - 1), a - 1, -1)
+        for x in pos:
+            out.append(x)
+            if len(out) == 3:
+                return out
+    return []
+
+
 def _isoform(cache, tx, which, check, mask, strand) -> Isoform:
     t = str(tx.transcript_id.iloc[0])
     seq = cache.sequence(t)
@@ -814,14 +828,15 @@ def _isoform(cache, tx, which, check, mask, strand) -> Isoform:
             aa = _aa_spans(tx, own)
             ref = own
             inside = lambda x: any(a <= x <= b for a, b in own)  # noqa: E731
-            codon = "start codon" if inside(first) else ("stop codon" if inside(last) else "")
+            stop = _stop_codon(exn, last, strand)
+            codon = "start codon" if inside(first) else ("stop codon" if any(inside(x) for x in stop) else "")
         else:                                                   # the region is absent: where would it sit?
             up = ([b for _, b in exn if b < mask[0][0]] if strand == "+" else
                   [a for a, _ in exn if a > mask[-1][1]])
             ref = [(max(up), max(up))] if strand == "+" and up else ([(min(up), min(up))] if up else [])
             sp = _aa_spans(tx, ref) if ref else []
             after = sp[0][1] if sp else None
-        if not aa and after is None and ref:
+        if not aa and after is None and ref and not codon:     # no coding residue and no stop codon: a UTR
             a, b = ref[0][0], ref[-1][1]
             before = (b < lo_c) if strand == "+" else (a > hi_c)
             utr = "5′ UTR" if before else "3′ UTR"
@@ -843,6 +858,10 @@ def _effect(pc: ProteinChange, geom) -> dict:
     psi_form, other_form = form_names(geom.event_type)
     both = inc is not None and exc is not None and inc.coding and exc.coding
     if both and inc.protein == exc.protein:
+        if inc.event_aa or exc.event_aa:        # the event is coding, yet both forms translate the same (e.g. an MXE)
+            return dict(kind="identical", frame="", short="no protein change",
+                        text=f"{inc.name} and {exc.name} encode the same protein, although the event lies in the "
+                             "coding sequence")
         return dict(kind="utr", frame="", short="no protein change",
                     text=f"{inc.name} and {exc.name} encode the same protein: the event lies outside the coding "
                          f"sequence")
@@ -876,9 +895,10 @@ def _effect(pc: ProteinChange, geom) -> dict:
         kind, frame, short = "utr", "", ref.utr
         text = f"the event lies in the {ref.utr} of {name}: the protein is unchanged"
     elif ref.codon:
-        a, b = ref.event_aa[0][0], ref.event_aa[-1][1]
         kind, short = ("start" if ref.codon == "start codon" else "end"), ref.codon
-        text = (f"the {noun} holds the {ref.codon} of {name} (residues {a}–{b}), so the other form changes the "
+        where = (f"residues {ref.event_aa[0][0]}–{ref.event_aa[-1][1]}" if ref.event_aa
+                 else f"after residue {len(ref.protein)}")      # the stop codon alone, after the last residue
+        text = (f"the {noun} holds the {ref.codon} of {name} ({where}), so the other form changes the "
                 f"protein's {'start' if kind == 'start' else 'end'}")
     elif mxe:
         a, b = ref.event_aa[0][0], ref.event_aa[-1][1]

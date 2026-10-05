@@ -29,8 +29,8 @@ def _texts(fig) -> str:
 def test_role_column_names_the_comparison(tables):
     ds = sa.Dataset.from_tables(**_renamed(tables))
     assert ds.labels == {"case": "Responder", "reference": "Non-responder"}
-    a = sa.analyse(sa.Dataset.from_tables(**tables), events=["SYN1:SE:1"])
-    b = sa.analyse(ds, events=["SYN1:SE:1"])
+    a = sa.analyze(sa.Dataset.from_tables(**tables), events=["SYN1:SE:1"])
+    b = sa.analyze(ds, events=["SYN1:SE:1"])
     pd.testing.assert_frame_equal(a.groups, b.groups)                 # same statistics, other names
     pd.testing.assert_frame_equal(a.survival, b.survival)
     with pytest.raises(InputError, match="role column"):                # neither flags nor a role column

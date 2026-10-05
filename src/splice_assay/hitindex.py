@@ -11,7 +11,9 @@ HITindex IDs carry no strand and no gene symbol, so a GTF gives both.
 
     events   event_id '<prefix><SYMBOL>:<TYPE>:<nnnn>', numbered per gene and type in transcript order (5' to 3');
              variable = the exon (0-based half-open); for AFE and ALE, constant = the gene's other first or last exons
-             in the matrix (drawn grey); label '<TYPE>:<nnnn>'; source_id = the HITindex ID
+             in the matrix (drawn grey); label '<TYPE>:<nnnn>'; source_id = the HITindex ID. When one symbol names
+             several genes (gene IDs, or the X and Y copies of a pseudoautosomal gene), each is ordered and drawn on
+             its own and the numbering continues across them
     psi      event_id, sample_id, psi (the AFE or ALE PSI, or the HIT index)
 """
 from __future__ import annotations
@@ -71,8 +73,8 @@ def read_matrix(path, gene_ids=None) -> pd.DataFrame:
         header = fh.readline()
         sep = "\t" if "\t" in header else ","
         kept = [header]
-        for line in fh:
-            if want is None or line[:line.find(sep)].split(";", 1)[0].split(".")[0] in want:
+        for line in fh:                  # the ID may be quoted (R's write.csv), as read_csv would read it
+            if want is None or line[:line.find(sep)].strip().strip("\"'").split(";", 1)[0].split(".")[0] in want:
                 kept.append(line)
     m = pd.read_csv(io.StringIO("".join(kept)), sep=sep, index_col=0, dtype={0: str}, low_memory=False)
     m.index = m.index.astype(str).str.strip()
@@ -111,15 +113,18 @@ def import_hitindex(matrices, gtf, genes=None, prefix: str = "") -> tuple[pd.Dat
                       "drawn", stacklevel=2)
     events = []
     for (gene, kind), d in ex.groupby(["gene", "event_type"], sort=True):
-        minus = d.strand.iloc[0] == "-"
-        d = d.sort_values(["end", "start"], ascending=False) if minus else d.sort_values(["start", "end"])
-        ivs = list(zip(d.start, d.end))
-        for n, r in enumerate(d.itertuples(), start=1):
-            others = sorted(iv for iv in ivs if iv != (r.start, r.end)) if kind in ("AFE", "ALE") else []
-            events.append(dict(event_id=f"{prefix}{gene}:{kind}:{n:04d}", gene=gene, gene_id=r.gene_id,
-                               chrom=r.chrom, strand=r.strand, event_type=kind,
-                               constant=format_intervals(others), variable=f"{r.start}-{r.end}",
-                               label=f"{kind}:{n:04d}", source_id=r.source_id))
+        n = 0                            # numbered per symbol (unique IDs); ordered, and other exons, per gene
+        for _, g in d.groupby(["gene_id", "chrom"], sort=True):    # one symbol can name several genes, or PAR copies
+            minus = g.strand.iloc[0] == "-"
+            g = g.sort_values(["end", "start"], ascending=False) if minus else g.sort_values(["start", "end"])
+            ivs = list(zip(g.start, g.end))
+            for r in g.itertuples():
+                n += 1
+                others = sorted(iv for iv in ivs if iv != (r.start, r.end)) if kind in ("AFE", "ALE") else []
+                events.append(dict(event_id=f"{prefix}{gene}:{kind}:{n:04d}", gene=gene, gene_id=r.gene_id,
+                                   chrom=r.chrom, strand=r.strand, event_type=kind,
+                                   constant=format_intervals(others), variable=f"{r.start}-{r.end}",
+                                   label=f"{kind}:{n:04d}", source_id=r.source_id))
     events = pd.DataFrame(events)
     ids = dict(zip(events.source_id, events.event_id))
     psi = m.rename(index=ids).rename_axis("event_id").reset_index().melt(

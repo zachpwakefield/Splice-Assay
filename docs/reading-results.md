@@ -59,7 +59,9 @@ three cohorts:
   - The header gives the number of pairs.
   - Δ is the median of the within-patient differences.
   - p comes from the exact signed-rank test.
-- **All samples.** Every reference and case sample, with boxes; diamonds mark the medians.
+- **All samples.** Every reference and case patient, one point each, with boxes; diamonds mark the medians. A
+  patient with several samples in a group (e.g. replicate aliquots) is shown, and tested, as their mean; the numbers
+  under the groups count patients.
   - Δ is the median of the tumours minus the median of the normals.
   - p comes from the Mann–Whitney test.
   - The dotted line is the KM split.
@@ -81,7 +83,7 @@ stage).
 - **Header.** Patients and events in the fit, and the q of the PSI term. The second line gives the model, with any
   notes in brackets (next section).
 - **Rows.** Each term's HR with its 95% CI and p, on one shared axis.
-  - PSI is per IQR of PSI in this cohort (bold, diamond), or per SD with `--hr-unit sd`. Host expression and age are
+  - PSI is per SD of PSI in this cohort (bold, diamond), or per IQR with `--hr-unit iqr`. Host expression and age are
     per SD. Categories are against
     the reference level named.
   - Filled markers have p < 0.05.
@@ -99,14 +101,19 @@ stage).
 - **KM or Cox not run.** The panel names the gate that stopped it: PSI too sparse, too few patients or events, or no
   variation.
 - **Model notes** in brackets are cautions. The model was fitted and nothing is removed:
+  - `low power: 14 events (< 20)` (and ‡ after the forest CI): the fit ran with few deaths. Its CI is wide, a p ≥ 0.05
+    says little, and a significant HR from few deaths is likely inflated;
   - `6.7 events per term (< 10)`: few deaths for the number of terms, so expect wide CIs (an overfit risk);
-  - `narrow PSI range (IQR 0.040 < 0.05)`: the HR per IQR describes a change of a few PSI points;
+  - `narrow PSI range (SD 0.040 < 0.05)`: the HR per SD describes a change of a few PSI points;
   - `non-proportional hazards: PSI (p …)`: that term's effect changes over follow-up, so the HR is an average. Look at
     the KM curves;
   - `stage I merged into II (2 patients, 0 events)`: a level too rare to estimate joined its neighbour, so the
     reference reads "I–II";
   - `stage left out (0% recorded)`: a covariate recorded for under 80% of the cohort is not in its model;
-  - `unstable: …`: a covariate term with a standard error above 3.
+  - `host expression left out (no values)`, `(45% recorded)` or `(constant)`: the host gene's expression is missing,
+    recorded for under 80% of the cohort, or constant there, so the model is PSI alone in this cohort;
+  - `unstable: …`: a covariate term with a standard error above 3. A term penalized by `--ridge` keeps its
+    standard error per SD or per level below 1/√λ (1 at the default), so a sparse level goes unflagged there.
 
 ### 5. The forest of all cohorts
 
@@ -114,20 +121,23 @@ stage).
 
 - **Left.** The median PSI difference (tumour − normal) in every cohort with a test. Filled circles are within
   patients, open circles all samples. Dotted lines mark the ±0.10 effect threshold.
-- **Right.** The HR per IQR (or per SD) of PSI with its 95% CI, from the base model (PSI + host expression, written under the
+- **Right.** The HR per SD (or per IQR) of PSI with its 95% CI, from the base model (PSI + host expression, written under the
   axis), so all cohorts are compared under one model.
   - Filled diamonds have p < 0.05.
   - Arrowheads mark a CI that runs off the axis.
   - A `*` after a CI: that fit's q is below 0.05. The fill shows p, the `*` shows q.
   - A † after a CI: the PSI term of that fit failed the proportional-hazards test.
+  - A ‡ after a CI: that fit had fewer than 20 events (low power). It ran, but its CI is wide, and p ≥ 0.05 there
+    says little against an association.
 - **Shading** marks the cohorts drawn above. Look for the same direction across cohorts.
 
 ### 6. Legend and footnote
 
 ![Legend and footnote](reading/06_legend_footnote.png)
 
-- **The legend** covers every symbol on the page. When the page carries a `*` or a †, the legend adds
-  "* q < 0.05 (Benjamini–Hochberg)" or "† non-proportional hazards (p < 0.05)".
+- **The legend** covers every symbol on the page. When the page carries a `*`, a † or a ‡, the legend adds
+  "* q < 0.05 (Benjamini–Hochberg)", "† non-proportional hazards (p < 0.05)" or "‡ fewer than 20 events: low
+  power".
 - **The footnote** names the q families with their sizes (Benjamini–Hochberg within the gene, one family per kind of
   test) and lists any setting changed from the defaults. A page from relaxed gates always says so.
 
@@ -156,10 +166,10 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 
 | Section | What it tells you |
 |---|---|
-| What was run | Events, cohorts, subset, endpoint, the two models, and any setting changed from the defaults |
+| What was run | Events, cohorts, subset, endpoint, the two models as fitted (with the clinical columns read and their cleaned values), a ridge penalty and the terms it reached (`--ridge`), and any setting changed from the defaults |
 | How much is chance | For each model and KM: tests run, how many have p < 0.05, and how many chance alone would give |
-| Notes on the survival tests | How many fits carry each note (narrow PSI range, overfit risk, non-proportional hazards), naming the flagged fits with p < 0.05 |
-| Ranked events | One row per event with its counts, best cohort, HR, p, the suggested protein change and a link to its page |
+| Notes on the survival tests | How many fits carry each note (narrow PSI range, overfit risk, low power, host expression left out, non-proportional hazards), naming the flagged fits with p < 0.05, and how many fits `--min-events-per-term` stopped |
+| Ranked events | One row per event with its counts (with how many of the Cox hits are low power, ‡, which rank after the others), best cohort, HR, p (‡ when that fit has low power), the suggested protein change and a link to its page |
 | Protein changes, Host-gene expression | What the suggestions and the expression page are, and where to find them |
 | Files, Reproduce | The outputs, and the exact command that made them |
 
@@ -167,7 +177,8 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 
 ![Probe overview](reading/08_overview.png)
 
-- **Colour** is the HR per IQR of PSI (of the HIT index for HIT events), from the adjusted model where it was fitted.
+- **Colour** is the HR per SD of PSI (of the HIT index for HIT events), from the adjusted model where it was fitted.
+  The caption names a ridge penalty when those fits have one.
 - **A dot** is p < 0.05 (a large dot p < 0.01); a `*` replaces it when q < 0.05. A frame marks a tumour–normal hit.
   Grey cells were not tested.
 - **Rows** follow the ranking.
@@ -176,7 +187,7 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 
 | File | One row per | Key columns |
 |---|---|---|
-| `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `cox_p05`, `km_p05`, `group_hits`, `best_cohort`, `best_model`, `best_hr_per_iqr`, `best_p`, `protein_change`, `page` |
+| `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `adj_cox_p05_low_power`, `cox_p05`, `cox_p05_low_power`, `km_p05`, `group_hits`, `best_cohort`, `best_model`, `best_hr_per_sd`, `best_p`, `best_low_power`, `protein_change`, `page` |
 | `cells.csv` | event × cohort | `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `cox_notes`), adjusted Cox (`adj_*`) |
 | `expression_cells.csv` | host gene × cohort | the same tests for expression (HR per SD) |
 | `proteins.csv` | event | the matched transcripts, how they matched, residues, effect and features |

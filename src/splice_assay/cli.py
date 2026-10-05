@@ -17,7 +17,10 @@ from .stats.survival import CoxModel
 
 
 def _settings(args) -> Settings:
-    s = Settings.from_json(args.settings) if getattr(args, "settings", None) else Settings()
+    try:
+        s = Settings.from_json(args.settings) if getattr(args, "settings", None) else Settings()
+    except (OSError, ValueError, TypeError, OverflowError) as e:    # a missing file, bad JSON, an invalid setting
+        raise InputError(f"--settings {args.settings}: {e}") from None
     try:
         if getattr(args, "km_split", None):
             s = s.replace(km_split=args.km_split)
@@ -25,6 +28,12 @@ def _settings(args) -> Settings:
             s = s.replace(km_split_expression=args.km_split_expression)
         if getattr(args, "hr_unit", None):
             s = s.replace(psi_hr_unit=args.hr_unit)
+        if getattr(args, "ridge", None):
+            s = s.replace(cox_ridge=args.ridge)
+        if getattr(args, "ridge_penalty", None) is not None:
+            s = s.replace(cox_ridge_penalty=args.ridge_penalty)
+        if getattr(args, "min_events_per_term", None) is not None:
+            s = s.replace(cox_min_events_per_term=args.min_events_per_term)
     except ValueError as e:
         raise InputError(str(e)) from None
     if getattr(args, "case_label", None) or getattr(args, "reference_label", None):
@@ -50,27 +59,51 @@ def _dataset(args, event_ids=None) -> Dataset:
                             where=args.where, **_pairs(args.table, "--table"))
 
 
+def _cox_model(**kw) -> CoxModel:
+    try:
+        return CoxModel(**kw)
+    except ValueError as e:                                 # e.g. a column both a covariate and a stratum
+        raise InputError(str(e)) from None
+
+
 def _model(args) -> CoxModel:
-    return CoxModel(expression=not args.no_expression, covariates=tuple(args.covariate or ()),
-                    categorical=tuple(args.categorical or ()), strata=tuple(args.strata or ()),
-                    baseline=_pairs(getattr(args, "baseline", None), "--baseline"))
+    """The Cox model of the options: a column named with --categorical is a covariate too (treated as categories)."""
+    cats = tuple(args.categorical or ())
+    covs = tuple(dict.fromkeys(list(args.covariate or ()) + list(cats)))
+    return _cox_model(expression=not args.no_expression, covariates=covs, categorical=cats,
+                      strata=tuple(args.strata or ()), baseline=_pairs(getattr(args, "baseline", None), "--baseline"))
 
 
 def _detail(args, model: CoxModel):
     """The model band's model: the panel's model plus --detail-* clinical terms; True for --detail alone."""
-    extra = [getattr(args, f"detail_{k}", None) for k in ("covariate", "categorical", "strata")]
-    if any(extra):
-        return model.with_clinical(*(tuple(x or ()) for x in extra))
+    covs, cats, strata = (list(getattr(args, f"detail_{k}", None) or [])
+                          for k in ("covariate", "categorical", "strata"))
+    if covs or cats or strata:                              # --detail-categorical COL is a covariate too
+        try:
+            return model.with_clinical(tuple(dict.fromkeys(covs + cats)), tuple(cats), tuple(strata))
+        except ValueError as e:
+            raise InputError(str(e)) from None
     return True if getattr(args, "detail", False) else None
+
+
+def _events_source(args):
+    """Where the event columns are, as Dataset.from_dir reads them: --table events=, else the folder's events table,
+    else the psi table (--table psi= or the folder's)."""
+    from .dataset import find_tables
+    tables = _pairs(args.table, "--table")
+    if tables.get("events"):
+        return tables["events"]
+    if Path(args.data).is_dir() and "events" in find_tables(args.data):
+        return args.data
+    return tables.get("psi") or args.data
 
 
 def _with_gene_events(args, events) -> list[str]:
     """The events plus the other events of their genes in the same q families: q values are computed within each
-    gene, and HIT-index events form families of their own (so a PSI page never analyses them, nor a HIT page PSI)."""
+    gene, and HIT-index events form families of their own (so a PSI page never analyzes them, nor a HIT page PSI)."""
     from .dataset import events_table
     from .events import quantity
-    tables = _pairs(args.table, "--table")
-    ev = events_table(tables.get("events") or tables.get("psi") or args.data, _pairs(args.column, "--column") or None)
+    ev = events_table(_events_source(args), _pairs(args.column, "--column") or None)
     miss = [e for e in events if e not in ev.index]
     if miss:
         raise InputError(f"event(s) not in the events table: {', '.join(miss[:5])}")
@@ -90,7 +123,10 @@ def _split(v) -> list[str]:
 
 # ============================================================================================ commands
 def cmd_validate(args) -> int:
+    s = _settings(args)                                     # --settings, --km-split, ...: checked as well
     ds = _dataset(args, args.event or None)
+    if s.changed():
+        print(f"settings changed from the defaults: {s.changed_text()}")
     print(f"samples {len(ds.samples)} · events {len(ds.psi)} · cohorts {len(ds.cohorts)} · endpoints "
           f"{', '.join(ds.endpoints) or 'none'} · pairs {len(ds.pairs)} ({ds.notes['pairs_source']})")
     print(f"groups: case = {ds.labels['case']}, reference = {ds.labels['reference']}"
@@ -106,24 +142,35 @@ def cmd_validate(args) -> int:
               ", ".join(f"{k} {v}" for k, v in ds.notes["survival_rows_dropped"].items()))
     if ds.clinical is not None:
         print(f"clinical: {len(ds.clinical)} patients; columns {', '.join(map(str, ds.clinical.columns))}")
+        from .clinical import auto_clinical, found_summary
+        cleaned, _, found = auto_clinical(ds)
+        if found:                                           # what the default adjustment would read: check it
+            print(f"automatic adjustment (probe, panel model rows) reads {found_summary(cleaned.clinical, found)}")
     with pd.option_context("display.width", 200, "display.max_columns", 50):
         print(ds.summary().to_string(index=False))
+    reps = ds.samples[ds.samples.role.isin(["case", "reference"])].groupby(["cohort", "role", "patient_id"]).size()
+    reps = reps[reps > 1].groupby(level="role").size()
+    if len(reps):                                           # the unpaired test counts these patients once
+        what = ", ".join(f"{int(reps[r])} with several {ds.labels[r]} samples" for r in ("case", "reference")
+                         if r in reps.index)
+        print(f"note: patients {what} in one cohort; the unpaired test uses one value per patient (the mean of "
+              "their samples)")
     missing_geo = ds.events[(ds.events.event_type == "") | (ds.events.variable == "")]
     if len(missing_geo):
-        print(f"note: {len(missing_geo)} event(s) have no geometry; they can be analysed but not drawn")
+        print(f"note: {len(missing_geo)} event(s) have no geometry; they can be analyzed but not drawn")
     from .events import opt_in
     n_hit = int(ds.events.event_type.map(opt_in).sum())
     if n_hit:
-        print(f"note: {n_hit} HIT-index event(s); analyse and probe leave them out unless --include-hit (a HIT event "
-              "named with --event is always analysed)")
+        print(f"note: {n_hit} HIT-index event(s); analyze and probe leave them out unless --include-hit (a HIT event "
+              "named with --event is always analyzed)")
     print("ok")
     return 0
 
 
-def cmd_analyse(args) -> int:
-    from .analysis import analyse
+def cmd_analyze(args) -> int:
+    from .analysis import analyze
     ds = _dataset(args, args.event or None)
-    res = analyse(ds, events=args.event or None, cohorts=args.cohort or None, endpoints=args.endpoint or None,
+    res = analyze(ds, events=args.event or None, cohorts=args.cohort or None, endpoints=args.endpoint or None,
                   settings=_settings(args), model=_model(args), include_hit=args.include_hit)
     for k, p in res.write(args.out).items():
         print(f"{k}: {p}")
@@ -143,29 +190,33 @@ def _proteins(args):
 
 def cmd_panel(args) -> int:
     """One assay page. Without --cohort the most promising cohorts are picked; without --endpoint OS is used;
-    without --detail-* the model rows use age, sex and stage found in the clinical table (--no-detail: none)."""
-    from .analysis import analyse
-    from .clinical import auto_clinical
+    without --detail-* the model rows are the page's model plus age, sex and stage found in the clinical table
+    (--detail: the page's model alone when none is found; --no-detail: no model rows)."""
+    from .analysis import analyze
+    from .analysis import describe_model
+    from .clinical import adjusted, auto_clinical, found_summary
     from .plot import event_panel
     from .plot import expression_panel
     from .plot.panel_common import page_parts
     from .probe import combine, default_endpoint, pick_cohorts
-    ids = _with_gene_events(args, args.event)                # q values are within the gene: analyse all its events
+    ids = _with_gene_events(args, args.event)                # q values are within the gene: analyze all its events
     ds = _dataset(args, ids)
     s, model = _settings(args), _model(args)
     ep = default_endpoint(ds, args.endpoint)
     detail = None if args.no_detail else _detail(args, model)
-    if detail is None and not args.no_detail:
-        ds, detail, found = auto_clinical(ds)
-        if detail is not None:
-            if args.baseline:
-                detail = detail.with_clinical(baseline=_pairs(args.baseline, "--baseline"))
-            print(f"model rows: Cox {detail.describe(ds.expression is not None)} (found {', '.join(found.values())})")
+    if (detail is None or detail is True) and not args.no_detail:      # the page's model + age, sex, stage found
+        ds, auto, found = auto_clinical(ds, keep=model.clinical_columns)
+        if auto is not None:
+            detail = adjusted(model, auto, found)
+            print(f"model rows: Cox {describe_model(detail, ds, args.event, s)}; "
+                  f"found {found_summary(ds.clinical, found)}")
+        elif model.clinical_columns:                        # the page's model already has its clinical terms
+            detail = model
     cohorts = [c for c in (args.cohort or []) if c.lower() != "all"]
-    results = analyse(ds, events=ids, endpoints=[ep], settings=s, model=model)
-    adj = analyse(ds, events=ids, endpoints=[ep], settings=s, model=detail) if isinstance(detail, CoxModel) else None
+    results = analyze(ds, events=ids, endpoints=[ep], settings=s, model=model)
+    adj = analyze(ds, events=ids, endpoints=[ep], settings=s, model=detail) if isinstance(detail, CoxModel) else None
     if not cohorts:
-        cohorts = pick_cohorts(combine(results, adj, ep), args.event[0], args.top)
+        cohorts = pick_cohorts(combine(results, adj, ep), args.event[0], args.top, s.alpha)
         if not cohorts:
             raise InputError(f"{args.event[0]}: no cohort has a survival test for {ep}")
         print(f"cohorts shown (most promising of {len(ds.cohorts)}): {', '.join(cohorts)}")
@@ -202,9 +253,7 @@ def cmd_probe(args) -> int:
     from .probe import gene_events, probe
     event_ids = args.event or None
     if args.gene and not event_ids:                       # read only the gene's events
-        tables = _pairs(args.table, "--table")
-        src = tables.get("events") or tables.get("psi") or args.data
-        tab = events_table(src, _pairs(args.column, "--column") or None).reset_index()
+        tab = events_table(_events_source(args), _pairs(args.column, "--column") or None).reset_index()
         event_ids = gene_events(tab, args.gene)
         if not event_ids:
             raise InputError(f"no event of gene(s) {', '.join(args.gene)} in the events table")
@@ -242,15 +291,19 @@ def cmd_probe(args) -> int:
                       f"{r.km_tested} cohorts; best {r.best_cohort} log-rank HR {r.best_logrank_hr:.2f}, "
                       f"p {r.best_p:.3g}")
             else:
-                print(f"  {r.rank}. {r.label} ({r.gene}): adjusted p<.05 in {r.adj_cox_p05}, base p<.05 in "
-                      f"{r.cox_p05} of {r.cohorts_cox_tested} cohorts; best {r.best_cohort} HR "
-                      f"{getattr(r, f'best_hr_per_{s.psi_hr_unit}'):.2f}")
+                low = (lambda k: f" ({k}‡)" if k else "")             # hits in low-power fits, ranked last
+                print(f"  {r.rank}. {r.label} ({r.gene}): adjusted p<.05 in {r.adj_cox_p05}"
+                      f"{low(r.adj_cox_p05_low_power)}, base p<.05 in {r.cox_p05}{low(r.cox_p05_low_power)} of "
+                      f"{r.cohorts_cox_tested} cohorts; best {r.best_cohort} HR "
+                      f"{getattr(r, f'best_hr_per_{s.psi_hr_unit}'):.2f}" + (" ‡" if r.best_low_power else ""))
     return 0
 
 
 def cmd_panels(args) -> int:
-    """Many figures from a spec table: events and cohorts separated by ';', one endpoint per row, optional stem."""
-    from .analysis import analyse
+    """Many figures from a spec table: events and cohorts separated by ';', one endpoint per row, optional stem. Model
+    rows only on request: --detail (the page's model plus age, sex and stage found, as panel shows them) or
+    --detail-*."""
+    from .analysis import analyze
     from .plot import event_panel
     spec = read_table(args.spec)
     miss = [c for c in ("events", "cohorts", "endpoint") if c not in spec.columns]
@@ -260,7 +313,17 @@ def cmd_panels(args) -> int:
     s, model = _settings(args), _model(args)
     ids = _with_gene_events(args, events)                   # q values are within each gene
     ds = _dataset(args, ids)
-    res = analyse(ds, events=ids, settings=s, model=model)
+    detail = _detail(args, model)
+    if detail is True:                                      # --detail: the page's model + age, sex, stage found
+        from .analysis import describe_model
+        from .clinical import adjusted, auto_clinical, found_summary
+        ds, auto, found = auto_clinical(ds, keep=model.clinical_columns)
+        if auto is not None:
+            detail = adjusted(model, auto, found)
+            print(f"model rows: Cox {describe_model(detail, ds, events, s)}; "
+                  f"found {found_summary(ds.clinical, found)}")
+    res = analyze(ds, events=ids, settings=s, model=model)
+    adj = analyze(ds, events=ids, settings=s, model=detail) if isinstance(detail, CoxModel) else None
     gtf = _gtf(args)
     if gtf:                                                 # read the GTF once for every figure
         from .annotation import read_gtf
@@ -281,11 +344,10 @@ def cmd_panels(args) -> int:
         p = event_panel(ds, _split(r.events), _split(r.cohorts), str(r.endpoint).strip(), settings=s, gtf=gtf,
                         highlight=args.highlight, highlight_title=args.highlight_title, out_dir=args.out,
                         stem=None if stem is None or pd.isna(stem) else str(stem), results=res,
-                        detail=_detail(args, model), layout=args.layout, proteins=cache)
+                        detail=detail, detail_results=adj, layout=args.layout, proteins=cache)
         print(p.paths.get("png", p.stem))
     if not args.no_gex:                                     # one expression page per gene and endpoint
         from .plot import expression_panel
-        detail = _detail(args, model)
         xm = detail if isinstance(detail, CoxModel) else model
         todo = {}
         for r in spec.itertuples():
@@ -349,8 +411,7 @@ def cmd_cox(args) -> int:
     ds = _dataset(args, [args.event])
     s, model = _settings(args), _model(args)
     row, terms = model_terms(ds, args.event, args.cohort, args.endpoint, model, s)
-    use_expr = ds.expression is not None and model.expression
-    print(f"{args.event} · {args.cohort} · {args.endpoint}: Cox {model.describe(use_expr)}")
+    print(f"{args.event} · {args.cohort} · {args.endpoint}: Cox {row.cox_model}")      # as fitted in this cohort
     print(f"{int(row.cox_n)} patients, {int(row.cox_events)} events"
           + (f"; {int(row.cox_n_dropped)} left out for missing values" if row.get("cox_n_dropped", 0) else "")
           + (f"; {row.cox_notes}" if isinstance(row.get("cox_notes"), str) and row.cox_notes else ""))
@@ -366,12 +427,12 @@ def cmd_cox(args) -> int:
 
 def cmd_example(args) -> int:
     from . import example
-    from .analysis import analyse
+    from .analysis import analyze
     from .plot import cox_model_figure, event_panel, expression_panel
     out = Path(args.out)
     paths = example.write(out, separate=args.separate)
     ds = Dataset.from_dir(out / "data")
-    res = analyse(ds)
+    res = analyze(ds)
     res.write(out / "results")
     clinical = CoxModel().with_clinical(("age", "sex", "stage"), baseline={"stage": "I", "sex": "female"})
     figs = [expression_panel(ds, "SYN1", ["COH1", "COH2"], "OS", model=clinical, out_dir=out / "figures"),
@@ -380,7 +441,7 @@ def cmd_example(args) -> int:
             event_panel(ds, ["SYN1:SE:1", "SYN1:RI:1"], ["COH1"], "DSS", gtf=paths["gtf"], out_dir=out / "figures",
                         results=res),
             event_panel(ds, "SYN2:MXE:1", ["COH3"], "OS", gtf=paths["gtf"], out_dir=out / "figures", results=res),
-            # res leaves out the HIT index (as analyse does by default), so this page analyses SYN3's HIT events
+            # res leaves out the HIT index (as analyze does by default), so this page analyzes SYN3's HIT events
             event_panel(ds, "SYN3:HIT:0002", ["COH1"], "OS", gtf=paths["gtf"], out_dir=out / "figures"),
             cox_model_figure(ds, "SYN1:SE:1", "COH1", "OS", model=clinical, out_dir=out / "figures")]
     print(f"data:     {out / 'data'}")
@@ -507,8 +568,17 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--km-split", metavar="median|mean|VALUE",
                         help="KM split of the event values, PSI or HIT index (default median; Settings km_split)")
         sp.add_argument("--hr-unit", choices=["iqr", "sd"],
-                        help="show the PSI (or HIT index) hazard ratio per IQR (default) or per SD of the cohort "
+                        help="show the PSI (or HIT index) hazard ratio per SD (default) or per IQR of the cohort "
                              "(Settings psi_hr_unit; the tables hold both)")
+        sp.add_argument("--ridge", choices=["none", "clinical", "molecular", "all"],
+                        help="opt-in ridge (L2) penalty on Cox terms: clinical covariates, molecular (PSI or the HIT "
+                             "index, and host expression) or all (Settings cox_ridge; default none)")
+        sp.add_argument("--ridge-penalty", type=float, metavar="LAMBDA",
+                        help="its strength (Settings cox_ridge_penalty; default 1: like a normal prior with SD 1 on "
+                             "each log HR, per SD or per category level)")
+        sp.add_argument("--min-events-per-term", type=float, metavar="N",
+                        help="opt-in: no Cox fit with fewer than N events per estimated term (Settings "
+                             "cox_min_events_per_term; default 0, no such gate)")
         sp.add_argument("--km-split-expression", metavar="median|mean|VALUE",
                         help="KM split of host-gene expression (default median; Settings km_split_expression)")
         sp.add_argument("--keep", metavar="FILE",
@@ -521,7 +591,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     def model_args(sp):
         sp.add_argument("--covariate", action="append", help="clinical column to adjust for (repeat for more)")
-        sp.add_argument("--categorical", action="append", help="treat this covariate as categorical")
+        sp.add_argument("--categorical", action="append",
+                        help="clinical column to adjust for as categories, also when numeric (a covariate; no need to "
+                             "repeat it with --covariate)")
         sp.add_argument("--strata", action="append", help="clinical column used as Cox strata")
         sp.add_argument("--baseline", action="append", metavar="COLUMN=LEVEL",
                         help="reference level of a categorical covariate, e.g. stage=I")
@@ -529,14 +601,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     def detail_args(sp):
         sp.add_argument("--detail", action="store_true",
-                        help="add the full Cox model of each cohort shown (the model band)")
+                        help="add the full Cox model of each cohort shown (the model band): the page's model plus age, "
+                             "sex and stage found in the clinical table, or the page's model alone when none is found "
+                             "(panel shows the band by default; panels only with --detail)")
         sp.add_argument("--detail-covariate", action="append",
                         help="model band only: clinical column added to the model (repeat for more)")
-        sp.add_argument("--detail-categorical", action="append", help="model band only: categorical covariate")
+        sp.add_argument("--detail-categorical", action="append",
+                        help="model band only: clinical column added as categories")
         sp.add_argument("--detail-strata", action="append", help="model band only: strata column")
         sp.add_argument("--layout", default="auto", choices=["auto", "side", "stacked"],
                         help="with models: side = band below; stacked = one row per cohort with its model, forest "
-                             "below (auto: stacked from three cohorts)")
+                             "below (auto: stacked from three rows, one per event and cohort)")
 
     def layout_args(sp):
         sp.add_argument("--separate", action="store_true",
@@ -547,15 +622,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     def hit_arg(sp):
         sp.add_argument("--include-hit", action="store_true",
-                        help="also analyse HIT-index events (left out by default: the HIT index covers every exon, a "
-                             "far larger set; a HIT event named with --event is always analysed)")
+                        help="also analyze HIT-index events (left out by default: the HIT index covers every exon, a "
+                             "far larger set; a HIT event named with --event is always analyzed)")
 
     sp = sub.add_parser("validate", help="check the input tables and print per-cohort counts")
     data_args(sp)
     sp.add_argument("--event", action="append", help="check only these events")
     sp.set_defaults(func=cmd_validate)
 
-    sp = sub.add_parser("analyse", aliases=["analyze"], help="group and survival statistics as CSV")
+    sp = sub.add_parser("analyze", aliases=["analyse"], help="group and survival statistics as CSV")
     data_args(sp)
     model_args(sp)
     sp.add_argument("--out", required=True)
@@ -563,7 +638,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cohort", action="append")
     sp.add_argument("--endpoint", action="append")
     hit_arg(sp)
-    sp.set_defaults(func=cmd_analyse)
+    sp.set_defaults(func=cmd_analyze)
 
     def gex_args(sp):
         sp.add_argument("--no-gex", action="store_true",

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from splice_assay import Settings
+from splice_assay.plot.model import not_fitted
 from splice_assay.stats.survival import CoxModel, fit_cox, survival_cell
 
 S = Settings()
@@ -76,8 +77,14 @@ def test_gates():
     r, _ = survival_cell(x3, pos3, t3, np.zeros(40, int), None, S)
     assert r["km_status"] == "too_few_patients_or_events"
     assert r["cox_status"] == "too_few_patients_or_events"
-    r, _ = survival_cell(x3, pos3, t3, e3, np.full(40, 3.0), S)
-    assert r["cox_status"] == "constant_expression"
+    # host expression without information: PSI alone, said so (the same fit as without expression)
+    alone, _ = survival_cell(x3, pos3, t3, e3, None, S)
+    noise = np.full(40, 0.3)
+    noise[::2] = 0.1 + 0.2                                       # equal up to floating-point noise
+    for g, why in ((np.full(40, 3.0), "constant"), (noise, "constant"), (np.full(40, np.nan), "no values")):
+        r, _ = survival_cell(x3, pos3, t3, e3, g, S)
+        assert r["cox_status"] == "tested" and r["cox_model"] == "PSI" and r["cox_p"] == alone["cox_p"]
+        assert f"host expression left out ({why})" in r["cox_notes"]
 
 
 def test_separation_fails_the_fit():
@@ -95,7 +102,7 @@ def test_separation_fails_the_fit():
 def test_survival_hit_flag(results):
     sv = results.survival.set_index(["event_id", "cohort", "endpoint"])
     assert sv.loc[("SYN1:SE:1", "COH1", "OS")].survival_hit
-    assert set(results.survival.cox_model) == {"PSI + host expression"}     # analyse leaves out the HIT index
+    assert set(results.survival.cox_model) == {"PSI + host expression"}     # analyze leaves out the HIT index
 
 
 def test_covariates_and_strata_equal_a_direct_lifelines_fit(ds):
@@ -103,7 +110,7 @@ def test_covariates_and_strata_equal_a_direct_lifelines_fit(ds):
     from lifelines import CoxPHFitter
     import splice_assay as sa
     m = CoxModel(covariates=("age", "stage"), strata=("sex",))
-    res = sa.analyse(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
+    res = sa.analyze(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
     row = res.survival.iloc[0]
     assert row.cox_status == "tested" and row.cox_model == "PSI + host expression + age + stage; strata: sex"
     # the same fit by hand
@@ -135,12 +142,12 @@ def test_covariates_and_strata_equal_a_direct_lifelines_fit(ds):
 
 def test_model_without_expression_and_missing_clinical_table(ds, tables):
     import splice_assay as sa
-    r = sa.analyse(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"],
+    r = sa.analyze(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"],
                    model=CoxModel(expression=False)).survival.iloc[0]
     assert r.cox_model == "PSI"
     bare = sa.Dataset.from_tables(**{k: v for k, v in tables.items() if k != "clinical"})
     with pytest.raises(sa.InputError, match="no clinical table"):
-        sa.analyse(bare, events=["SYN1:SE:1"], model=CoxModel(covariates=("age",)))
+        sa.analyze(bare, events=["SYN1:SE:1"], model=CoxModel(covariates=("age",)))
 
 
 def test_rare_levels_merge_into_their_neighbours():
@@ -175,7 +182,7 @@ def test_a_rare_baseline_is_merged_and_the_model_fits(ds):
         cl.loc[p, "stage"] = "II" if k % 2 else "III"
     cl.loc[[p for p in pts if sv.at[p, "event"] == 0][:2], "stage"] = "I"
     m = CoxModel(covariates=("stage",), categorical=("stage",), baseline={"stage": "I"})
-    res = sa.analyse(replace(ds, clinical=cl), events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
+    res = sa.analyze(replace(ds, clinical=cl), events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
     row = res.survival.iloc[0]
     assert row.cox_status == "tested"
     assert "stage I merged into II (2 patients, 0 events)" in row.cox_notes
@@ -193,9 +200,9 @@ def test_flags_note_few_events_per_term_and_a_narrow_psi_range():
     r2, _ = survival_cell(x, pos, t, e, None, s)
     assert r2["cox_status"] == "tested" and r2["cox_p"] == r["cox_p"]
     assert f"{r2['cox_events']:.1f} events per term (< 1000)" in r2["cox_notes"]
-    assert r2["psi_narrow"] and f"narrow PSI range (IQR {r2['psi_iqr']:.3f} < 0.5)" in r2["cox_notes"]
-    r3, _ = survival_cell(x, pos, t, e, None, s.replace(narrow_psi_measure="sd"))
-    assert f"narrow PSI range (SD {r3['psi_sd']:.3f} < 0.5)" in r3["cox_notes"]
+    assert r2["psi_narrow"] and f"narrow PSI range (SD {r2['psi_sd']:.3f} < 0.5)" in r2["cox_notes"]
+    r3, _ = survival_cell(x, pos, t, e, None, s.replace(narrow_psi_measure="iqr"))
+    assert f"narrow PSI range (IQR {r3['psi_iqr']:.3f} < 0.5)" in r3["cox_notes"]
     r4, _ = survival_cell(x, pos, t, e, None, Settings(cox_events_per_term=0, narrow_psi_below=0))
     assert r4["cox_notes"] == "" and not r4["psi_narrow"]
 
@@ -225,7 +232,7 @@ def test_proportional_hazards_are_noted_not_enforced():
 def test_stratified_models_get_a_proportional_hazards_test(ds):
     import splice_assay as sa
     m = CoxModel(covariates=("age",), strata=("sex",))
-    res = sa.analyse(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
+    res = sa.analyze(ds, events=["SYN1:SE:1"], cohorts=["COH1"], endpoints=["OS"], model=m)
     assert np.isfinite(res.survival.iloc[0].ph_p) and res.cox_terms.ph_p.notna().all()
 
 
@@ -257,12 +264,182 @@ def test_hr_per_sd_setting():
     assert np.isclose(r["hr_per_sd"], np.exp(r["cox_beta"] * r["psi_sd"] / 0.10))
     assert np.isclose(r["hr_per_iqr"], np.exp(r["cox_beta"] * r["psi_iqr"] / 0.10))
     assert np.isclose(r["ci_low_sd"], np.exp((r["cox_beta"] - 1.959963984540054 * r["cox_se"]) * r["psi_sd"] / 0.10))
-    assert [m["kind"] for m in terms] == ["psi", "psi_iqr"]
-    sd = Settings(psi_hr_unit="sd")
-    r2, terms2 = survival_cell(x, pos, t, e, None, sd)
-    assert [m["kind"] for m in terms2] == ["psi", "psi_sd"] and terms2[1]["unit"].startswith("SD (")
-    assert terms2[1]["hr"] == r2["hr_per_sd"] and r2["hr_per_iqr"] == r["hr_per_iqr"] and r2["cox_p"] == r["cox_p"]
-    assert S.narrow_measure == "iqr" and sd.narrow_measure == "sd"
-    assert Settings(psi_hr_unit="sd", narrow_psi_measure="iqr").narrow_measure == "iqr"
+    assert [m["kind"] for m in terms] == ["psi", "psi_sd"] and terms[1]["unit"].startswith("SD (")    # the default
+    iqr = Settings(psi_hr_unit="iqr")
+    r2, terms2 = survival_cell(x, pos, t, e, None, iqr)
+    assert [m["kind"] for m in terms2] == ["psi", "psi_iqr"] and terms2[1]["unit"].startswith("IQR (")
+    assert terms2[1]["hr"] == r2["hr_per_iqr"] and r2["hr_per_sd"] == r["hr_per_sd"] and r2["cox_p"] == r["cox_p"]
+    assert S.narrow_measure == "sd" and iqr.narrow_measure == "iqr"
+    assert Settings(psi_hr_unit="iqr", narrow_psi_measure="sd").narrow_measure == "sd"
     with pytest.raises(ValueError, match="psi_hr_unit"):
         Settings(psi_hr_unit="range")
+
+
+def test_a_most_common_level_without_events_merges_into_the_next():
+    """A category without events has no estimate, also when it is the most common one (unordered levels)."""
+    from splice_assay.stats.survival import merge_rare_levels
+    race = pd.Series(["white"] * 60 + ["black"] * 25 + ["asian"] * 15)
+    e = np.r_[np.zeros(60), np.ones(25), np.ones(5), np.zeros(10)].astype(int)
+    out, label, notes = merge_rare_levels(race, e, 10)
+    assert label == {"asian": "asian", "black": "black+white", "white": "black+white"}
+    assert notes == ["white merged into black (60 patients, 0 events)"]
+    rng = np.random.default_rng(0)
+    row, _ = survival_cell(rng.uniform(0, 1, 100), np.arange(100), rng.exponential(100, 100), e, None, Settings(),
+                           CoxModel(expression=False, covariates=("race",), categorical=("race",)),
+                           pd.DataFrame({"race": race}))
+    assert row["cox_status"] == "tested" and "white merged into black" in row["cox_notes"]
+    # rare levels joining a most common level that has no events: that group joins the next one in turn
+    v = pd.Series(["a"] * 50 + ["b"] * 30 + ["c"] * 5)
+    assert merge_rare_levels(v, np.r_[np.zeros(50), np.ones(30), np.zeros(5)], 10)[1] == {"a": "b+a+c", "b": "b+a+c",
+                                                                                         "c": "b+a+c"}
+
+
+def test_no_patient_with_every_covariate_is_a_gate_not_an_error():
+    """Five categorical covariates, each recorded for 80% of the cohort but never all for the same patient."""
+    rng = np.random.default_rng(0)
+    n = 100
+    cols = {}
+    for k in range(5):
+        v = np.array(["a", "b"] * (n // 2), dtype=object)
+        v[k * 20:(k + 1) * 20] = None
+        cols[f"c{k}"] = v
+    m = CoxModel(expression=False, covariates=tuple(cols), categorical=tuple(cols))
+    row, terms = survival_cell(rng.uniform(0, 1, n), np.arange(n), rng.exponential(100, n),
+                               (rng.uniform(size=n) < 0.6).astype(int), None, Settings(), m, pd.DataFrame(cols))
+    assert row["cox_status"] == "too_few_patients_or_events" and row["cox_n"] == 0 and terms == []
+
+
+def test_ten_events_fit_and_fewer_than_twenty_are_marked_low_power():
+    """cox_min_events is 10; a fit with fewer than cox_low_power_events (20) events runs and is marked low power."""
+    x, pos, t, e = cohort(6, n=60)
+    ev = np.flatnonzero(e)
+    for k, tested, low in ((9, False, None), (12, True, True), (25, True, False)):
+        e_k = np.zeros_like(e)
+        e_k[ev[:k]] = 1
+        r, _ = survival_cell(x, pos, t, e_k, None, S)
+        assert (r["cox_status"] == "tested") == tested, k
+        if tested:
+            assert r["cox_low_power"] == low and (f"low power: {k} events (< 20)" in r["cox_notes"]) == low
+    e12 = np.zeros_like(e)
+    e12[ev[:12]] = 1
+    r, _ = survival_cell(x, pos, t, e12, None, Settings(cox_low_power_events=0))
+    assert not r["cox_low_power"] and "low power" not in r["cox_notes"]
+
+
+def test_host_expression_follows_the_rule_for_clinical_variables():
+    """Recorded for fewer than 80% of the fit patients: left out (PSI alone on every patient); for more: complete
+    cases, with expression."""
+    x, pos, t, e = cohort(3)
+    n = len(x)
+    alone, _ = survival_cell(x, pos, t, e, None, S)
+    g = np.random.default_rng(1).normal(size=n)
+    half = g.copy()
+    half[::2] = np.nan
+    r, _ = survival_cell(x, pos, t, e, half, S)
+    assert r["cox_model"] == "PSI" and "host expression left out (50% recorded)" in r["cox_notes"]
+    assert r["cox_n"] == alone["cox_n"] and r["cox_p"] == alone["cox_p"]
+    most = g.copy()
+    most[:n // 10] = np.nan                                       # 90% recorded
+    r2, _ = survival_cell(x, pos, t, e, most, S)
+    assert r2["cox_model"] == "PSI + host expression" and r2["cox_n"] == n - n // 10
+
+
+def test_base_and_adjusted_models_decide_alike_on_expression():
+    """Expression's 80% rule counts the cohort's fit patients, as the clinical rule does, so a model with clinical
+    terms keeps or leaves out expression exactly as the base model does."""
+    x, pos, t, e = cohort(3)
+    n = len(x)
+    rng = np.random.default_rng(2)
+    g = rng.normal(size=n)
+    g[:int(0.19 * n)] = np.nan                                  # 81% recorded
+    age = rng.normal(60, 10, n)
+    age[int(0.19 * n):int(0.19 * n) + 12] = np.nan               # missing for other patients
+    base, _ = survival_cell(x, pos, t, e, g, S)
+    adj, _ = survival_cell(x, pos, t, e, g, S, CoxModel(covariates=("age",)), pd.DataFrame({"age": age}))
+    assert "host expression" in base["cox_model"] and adj["cox_model"] == "PSI + host expression + age"
+
+
+def _penalized_cox(X, time, event, lam, strata=None):
+    """An independent penalized Cox fit (no tied times, where Efron's partial likelihood is the exact one): the partial
+    log-likelihood (summed over strata) minus 1/2 * sum(lam * beta^2), maximized with scipy."""
+    from scipy.optimize import minimize
+    strata = np.zeros(len(time)) if strata is None else np.asarray(strata)
+    parts = []
+    for g in np.unique(strata):
+        m = strata == g
+        order = np.argsort(time[m])
+        parts.append((X[m][order], event[m][order]))
+
+    def nll(b):
+        ll = sum(np.sum(es * (Xs @ b - np.log(np.cumsum(np.exp(Xs @ b)[::-1])[::-1]))) for Xs, es in parts)
+        return -ll + 0.5 * np.sum(lam * b ** 2)
+    return minimize(nll, np.zeros(X.shape[1]), method="BFGS", options={"gtol": 1e-11}).x
+
+
+@pytest.mark.parametrize("scope", ["all", "clinical", "molecular"])
+def test_ridge_equals_an_independent_penalized_fit(scope):
+    """lambda/2 * beta^2 per penalized term: beta per SD for PSI, expression and numeric covariates, per level for
+    categories; the model's name says so."""
+    rng = np.random.default_rng(4)
+    n = 150
+    x, g, age = rng.uniform(0.2, 0.9, n), rng.normal(5, 2, n), rng.normal(60, 9, n)
+    grp = np.array(["A"] * 90 + ["B"] * 40 + ["C"] * 20)
+    t = rng.exponential(np.exp(-(1.5 * x + 0.3 * (grp == "B"))))           # continuous: no tied times
+    e = (rng.uniform(size=n) < 0.75).astype(int)
+    lam = 2.0
+    s = Settings(cox_ridge=scope, cox_ridge_penalty=lam)
+    r, terms = survival_cell(x, np.arange(n), t, e, g, s, CoxModel(covariates=("age", "grp"), categorical=("grp",)),
+                             pd.DataFrame({"age": age, "grp": grp}))
+    assert r["cox_status"] == "tested" and r["cox_model"].endswith(
+        {"all": "; ridge λ 2 (all terms)", "clinical": "; ridge λ 2 (clinical terms)",
+         "molecular": "; ridge λ 2 (PSI and host expression)"}[scope])
+    z = (lambda v: (v - v.mean()) / v.std(ddof=1))
+    X = np.column_stack([x / 0.1, z(g), z(age), (grp == "B").astype(float), (grp == "C").astype(float)])
+    per_sd = np.r_[np.var(x / 0.1, ddof=1), 1, 1, 1, 1]                   # PSI is penalized per SD
+    on = {"all": [1, 1, 1, 1, 1], "clinical": [0, 0, 1, 1, 1], "molecular": [1, 1, 0, 0, 0]}[scope]
+    want = _penalized_cox(X, t, e, lam * per_sd * np.array(on))
+    got = [m["coef"] for m in terms if m["kind"] in ("psi", "expression", "numeric", "categorical")]
+    assert np.allclose(got, want, atol=1e-5), (got, want)
+
+
+def test_ridge_leaves_strata_unpenalized():
+    """With a stratum the penalty per term is the same, and the stratum (no coefficient) is not penalized."""
+    rng = np.random.default_rng(6)
+    n = 160
+    x, age = rng.uniform(0.2, 0.9, n), rng.normal(60, 9, n)
+    site = np.array(["s1"] * 70 + ["s2"] * 90)
+    t = rng.exponential(np.exp(-(1.5 * x + 0.8 * (site == "s2"))))
+    e = (rng.uniform(size=n) < 0.75).astype(int)
+    r, terms = survival_cell(x, np.arange(n), t, e, None, Settings(cox_ridge="all", cox_ridge_penalty=2.0),
+                             CoxModel(covariates=("age",), strata=("site",)), pd.DataFrame({"age": age, "site": site}))
+    X = np.column_stack([x / 0.1, (age - age.mean()) / age.std(ddof=1)])
+    want = _penalized_cox(X, t, e, 2.0 * np.r_[np.var(x / 0.1, ddof=1), 1], strata=site)
+    got = [m["coef"] for m in terms if m["kind"] in ("psi", "numeric")]
+    assert r["cox_status"] == "tested" and np.allclose(got, want, atol=1e-5), (got, want)
+
+
+def test_no_ridge_by_default_and_none_reached():
+    x, pos, t, e = cohort(3)
+    r0, _ = survival_cell(x, pos, t, e, None, S)
+    r1, _ = survival_cell(x, pos, t, e, None, Settings(cox_ridge="clinical"))     # no clinical term: no penalty
+    assert r0["cox_model"] == r1["cox_model"] == "PSI" and r0["cox_beta"] == r1["cox_beta"]
+    r2, _ = survival_cell(x, pos, t, e, None, Settings(cox_ridge="molecular"))
+    assert r2["cox_model"] == "PSI; ridge λ 1 (PSI)" and abs(r2["cox_beta"]) < abs(r0["cox_beta"])   # shrunk
+    r3, _ = survival_cell(x, pos, t, e, None, Settings(cox_ridge="all", cox_min_n=10_000))
+    assert r3["cox_status"] == "too_few_patients_or_events" and r3["cox_model"] == "PSI"   # not fitted: no penalty
+
+
+def test_a_minimum_of_events_per_term_is_opt_in():
+    x, pos, t, e = cohort(3)
+    rng = np.random.default_rng(5)
+    clin = pd.DataFrame({"age": rng.normal(60, 9, len(x)), "sex": np.where(rng.uniform(size=len(x)) < 0.5, "f", "m")})
+    m = CoxModel(covariates=("age", "sex"))
+    r, _ = survival_cell(x, pos, t, e, None, S, m, clin)
+    assert r["cox_status"] == "tested"                                       # off by default
+    need = r["cox_events"] / 3 + 1                                           # three terms: PSI, age, sex
+    r2, _ = survival_cell(x, pos, t, e, None, Settings(cox_min_events_per_term=need), m, clin)
+    assert r2["cox_status"] == "too_few_events_per_term" and r2["cox_events_per_term"] == r["cox_events"] / 3
+    r3, _ = survival_cell(x, pos, t, e, None, Settings(cox_min_events_per_term=need, cox_ridge="all"), m, clin)
+    assert r3["cox_status"] == "too_few_events_per_term" and r3["cox_model"] == "PSI + age + sex"   # no penalty named
+    assert not_fitted(pd.Series(r3), Settings(cox_min_events_per_term=need)) == \
+        f"too few events per term ({r['cox_events']} events for 3 terms; needs {need:g} per term)"

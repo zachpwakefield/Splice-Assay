@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 TIME_UNITS = {"days": None, "months": 12.0, "years": 1.0}
+RIDGE_SCOPES = ("none", "clinical", "molecular", "all")
 DRAWING = {"km_max_years", "km_tick_years", "gene_model_min_frac", "nested_biotypes", "exclude_transcript_types",
            "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below"}
 
@@ -34,7 +35,8 @@ def _split_rule(v, name: str):
 class Settings:
     # ------------------------------------------------------------------ tumour vs normal
     min_pairs: int = 10               # the paired test needs at least this many tumour-normal pairs
-    min_group: int = 10               # the unpaired test needs at least this many tumours and normals
+    min_group: int = 10               # the unpaired test needs at least this many case and reference patients (one
+                                      # value each: the mean of a patient's samples in the group)
     alpha: float = 0.05               # significance level of the hit rules
     min_abs_delta: float = 0.10       # a hit needs round(|delta median PSI|, 12) > this
     robust_01: bool = True            # a hit must survive dropping PSI values of exactly 0 or 1
@@ -51,11 +53,19 @@ class Settings:
     km_min_group: int = 10            # log-rank: at least this many patients in each arm
     km_min_events: int = 10           # ... and at least this many events
     cox_min_n: int = 30               # Cox: at least this many patients
-    cox_min_events: int = 20          # ... and at least this many events
+    cox_min_events: int = 10          # ... and at least this many events
+    cox_low_power_events: int = 20    # a Cox fit with fewer events is marked low power (a note, ‡ in the forest);
+                                      # the fit stands (0 = never)
+    cox_min_events_per_term: float = 0.0  # opt-in: no Cox fit with fewer events per estimated term (e.g. 5; 0 = no
+                                          # such gate)
+    cox_ridge: str = "none"           # opt-in ridge (L2) penalty on Cox terms: "none", "clinical" (clinical
+                                      # covariates), "molecular" (PSI or the HIT index, and host expression) or "all"
+    cox_ridge_penalty: float = 1.0    # its strength: lambda/2 * beta^2 per penalized term, beta the log HR per SD (per
+                                      # level for categories), like a normal prior with SD 1/sqrt(lambda) on each
     low_psi_variance_sd: float = 0.002  # no survival test when SD(PSI) of the cohort is below this
     nr_refit_step_size: float = 0.5   # a Newton-Raphson failure is refitted once with this step size
     psi_step: float = 0.10            # the Cox coefficient is per +0.10 PSI
-    psi_hr_unit: str = "iqr"          # the PSI (or HIT index) hazard ratio shown: per "iqr" or per "sd" of the fit
+    psi_hr_unit: str = "sd"           # the PSI (or HIT index) hazard ratio shown: per "sd" or per "iqr" of the fit
                                       # cohort's values (the tables hold both)
     covariate_min_complete: float = 0.8  # a clinical variable recorded for fewer of a cohort's patients is left out
                                          # of that cohort's model (else it would shrink the cohort)
@@ -91,8 +101,8 @@ class Settings:
 
     def __post_init__(self):
         for name in ("min_pairs", "min_group", "min_off_modal", "km_min_group", "km_min_events", "cox_min_n",
-                     "cox_min_events", "round_decimals", "dpi", "gtf_flank", "fdr_min_family", "level_min_patients",
-                     "cohorts_per_page"):
+                     "cox_min_events", "cox_low_power_events", "round_decimals", "dpi", "gtf_flank", "fdr_min_family",
+                     "level_min_patients", "cohorts_per_page"):
             if int(getattr(self, name)) != getattr(self, name) or getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be a non-negative integer")
         for name in ("alpha", "coverage_frac", "gene_model_min_frac", "covariate_min_complete"):
@@ -102,7 +112,12 @@ class Settings:
                      "narrow_psi_below", "ph_note_below", "hit_min_abs_delta", "q_mark_below"):
             if getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be >= 0")
-        for name in ("psi_step", "ci_z", "days_per_year", "km_max_years", "km_tick_years", "nr_refit_step_size"):
+        if self.cox_ridge not in RIDGE_SCOPES:
+            raise ValueError(f"Settings.cox_ridge must be one of {', '.join(RIDGE_SCOPES)}")
+        if self.cox_min_events_per_term < 0:
+            raise ValueError("Settings.cox_min_events_per_term must be >= 0")
+        for name in ("psi_step", "ci_z", "days_per_year", "km_max_years", "km_tick_years", "nr_refit_step_size",
+                     "cox_ridge_penalty"):
             if not getattr(self, name) > 0:
                 raise ValueError(f"Settings.{name} must be > 0")
         for name in ("km_split", "km_split_expression"):
@@ -129,7 +144,9 @@ class Settings:
         return replace(self, **changes)
 
     def to_dict(self) -> dict:
-        return {k: (list(v) if isinstance(v, tuple) else v) for k, v in asdict(self).items()}
+        """Plain Python values (JSON-ready: tuples as lists, numpy numbers as Python numbers)."""
+        return {k: (list(v) if isinstance(v, tuple) else v.item() if isinstance(v, np.generic) else v)
+                for k, v in asdict(self).items()}
 
     def changed(self) -> dict:
         """The analysis settings (gates and thresholds, not drawing) that differ from the defaults: name -> (value,
@@ -145,6 +162,8 @@ class Settings:
 
     @classmethod
     def from_dict(cls, d: dict) -> "Settings":
+        if not isinstance(d, dict):
+            raise ValueError('expected an object of settings, e.g. {"min_pairs": 5}')
         known = {f.name for f in fields(cls)}
         unknown = sorted(set(d) - known)
         if unknown:

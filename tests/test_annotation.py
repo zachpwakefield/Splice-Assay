@@ -1,5 +1,8 @@
 import gzip
 
+import pandas as pd
+import pytest
+
 from splice_assay.annotation import collapsed_model, gene_model, read_gtf, subset_gtf
 
 
@@ -39,3 +42,15 @@ def test_subset_gtf(gtf_path, tmp_path):
     with gzip.open(out, "rt") as fh:
         lines = fh.read().splitlines()
     assert n == len(lines) > 0 and all(line.startswith("chr12") for line in lines)
+
+
+def test_the_warning_names_why_a_gene_has_no_track():
+    one = pd.DataFrame(dict(chrom="chr1", feature=["gene"] + ["exon"] * 3, start=[0, 0, 200, 400],
+                            end=[500, 100, 300, 500], strand="+", gene_id="G1", gene_name="GENE1",
+                            gene_type="protein_coding", transcript_id=["", "T1", "T1", "T1"],
+                            transcript_type="protein_coding"))
+    with pytest.warns(UserWarning, match="no exon shared by at least 2 of its 1 multi-exon transcript "):
+        assert gene_model(one, "GENE1", "chr1", (150, 250)) is None
+    single = one[one.feature.eq("gene") | one.start.eq(0)]                        # one single-exon transcript
+    with pytest.warns(UserWarning, match="has no multi-exon transcript"):
+        assert gene_model(single, "GENE1", "chr1", (50, 60)) is None

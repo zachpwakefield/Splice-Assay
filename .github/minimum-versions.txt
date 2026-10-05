@@ -1,0 +1,7 @@
+# The oldest versions pyproject.toml allows (its dependency floors), as pip constraints: the CI and the publish
+# workflow test them on the oldest Python supported. Keep this file in step with pyproject.toml.
+numpy==1.24.0
+pandas==2.1.0
+scipy==1.11.1            # 1.11.0 is yanked on PyPI
+matplotlib==3.7.0
+lifelines==0.29.0

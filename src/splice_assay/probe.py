@@ -31,8 +31,9 @@ import numpy as np
 import pandas as pd
 
 from . import __version__
-from .analysis import Results, analyse
-from .clinical import auto_clinical
+from .analysis import Results, analyze
+from .clinical import adjusted as clinical_adjusted
+from .clinical import auto_clinical, found_summary
 from .config import Settings
 from .dataset import Dataset, InputError
 from .events import opt_in, quantity
@@ -40,11 +41,12 @@ from .stats.survival import CoxModel
 
 ALL = 10_000                     # `top` meaning every cohort with a test
 RANKING = ("measurable events first; then cohorts where the adjusted Cox p < 0.05, then where the base Cox p < 0.05, "
-           "then cohorts with both a group hit and a survival hit, then cohorts where the KM p < 0.05, then the "
-           "smallest p (adjusted Cox, else base Cox, else KM)")
+           "then cohorts with both a group hit and a survival hit, then cohorts where the KM p < 0.05, counting Cox "
+           "fits only when they are not low power; then the low-power Cox hits (‡), adjusted, then base; then the p of "
+           "the best cohort (adjusted Cox, else base Cox, else KM)")
 ADJ_COLS = ["cox_status", "cox_model", "cox_n", "cox_events", "cox_n_dropped", "cox_notes", "hr_per_iqr",
             "ci_low_iqr", "ci_high_iqr", "hr_per_sd", "ci_low_sd", "ci_high_sd", "cox_p", "cox_q", "cox_q_tests",
-            "cox_events_per_term", "psi_narrow", "ph_p"]
+            "cox_low_power", "cox_events_per_term", "psi_narrow", "ph_p"]
 
 
 @dataclass
@@ -79,6 +81,12 @@ def select_events(ds: Dataset, genes=None, events=None, include_hit: bool = Fals
     return out
 
 
+def _describe(model: CoxModel, ds: Dataset, events, s: Settings | None = None) -> str:
+    """The model's terms as fitted for these events, with a ridge penalty that reaches them (describe_model)."""
+    from .analysis import describe_model
+    return describe_model(model, ds, events, s)
+
+
 def default_endpoint(ds: Dataset, endpoint=None) -> str:
     if endpoint:
         return endpoint
@@ -98,8 +106,35 @@ def combine(base: Results, adj: Results | None, endpoint: str) -> pd.DataFrame:
     return cells                                         # q values come from the results: BH within each gene
 
 
-def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "iqr") -> pd.DataFrame:
-    """One row per event, ranked (RANKING). `unit`: the HR reported, per "iqr" or per "sd" (Settings.psi_hr_unit)."""
+def _flag(v) -> bool:
+    """A True/False cell that may be missing (NaN, None) or a numpy bool."""
+    return bool(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else False
+
+
+def _true(col: pd.Series) -> pd.Series:
+    """Where a True/False column is True, a missing value counting as False (without pandas' fillna downcasting of an
+    object column, deprecated)."""
+    return col.map(lambda v: False if pd.isna(v) else bool(v)).astype(bool)
+
+
+def _low(d: pd.DataFrame, col: str) -> pd.Series:
+    """A low-power flag column (fewer events than Settings.cox_low_power_events), False where absent or missing."""
+    return _true(d[col]) if col in d else pd.Series(False, index=d.index)
+
+
+def _tier(p: pd.Series, low: pd.Series, alpha: float) -> np.ndarray:
+    """The order of an event's cohorts: p < alpha in a fit that is not low power (0), p < alpha in a low-power fit
+    (1), then the other fits (2) and the other low-power fits (3); a missing p counts as not below alpha."""
+    with np.errstate(invalid="ignore"):
+        hit = (p < alpha).to_numpy()
+    lo = low.to_numpy(bool)
+    return np.where(hit, np.where(lo, 1, 0), np.where(lo, 3, 2))
+
+
+def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "sd") -> pd.DataFrame:
+    """One row per event, ranked (RANKING): Cox hits in fits that are not low power first, low-power hits (fewer
+    events than Settings.cox_low_power_events) as tie-breakers. `unit`: the HR reported, per "sd" or per "iqr"
+    (Settings.psi_hr_unit)."""
     hr = f"hr_per_{unit}"
     rows = []
     for eid, d in cells.groupby("event_id", sort=False):
@@ -108,12 +143,18 @@ def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "iqr
         has_adj = "adj_cox_p" in d
         ta = d[d.get("adj_cox_status", pd.Series(index=d.index, dtype=object)).eq("tested")] if has_adj else d.iloc[:0]
         sig_a = ta[ta.adj_cox_p < alpha] if has_adj else ta
-        surv_hit = d.survival_hit.fillna(False).astype(bool)
+        with np.errstate(invalid="ignore"):            # a survival hit: KM, or base Cox in a fit not low power
+            surv_hit = (d.km_status.eq("tested") & (d.km_p < alpha)) | (
+                d.cox_status.eq("tested") & (d.cox_p < alpha) & ~_low(d, "cox_low_power"))
         tk = d[d.km_status.eq("tested")]
-        if len(ta):
-            best, pcol, hcol, model = ta.sort_values("adj_cox_p"), "adj_cox_p", f"adj_{hr}", "adjusted"
+        if len(ta):                                     # the best cohort: a hit not low power, then a low-power hit
+            best = ta.assign(_t=_tier(ta.adj_cox_p, _low(ta, "adj_cox_low_power"), alpha)) \
+                .sort_values(["_t", "adj_cox_p"], kind="stable")
+            pcol, hcol, model = "adj_cox_p", f"adj_{hr}", "adjusted"
         elif len(t):
-            best, pcol, hcol, model = t.sort_values("cox_p"), "cox_p", hr, "base"
+            best = t.assign(_t=_tier(t.cox_p, _low(t, "cox_low_power"), alpha)).sort_values(["_t", "cox_p"],
+                                                                                         kind="stable")
+            pcol, hcol, model = "cox_p", hr, "base"
         else:                                           # no Cox model anywhere (e.g. too few deaths): the KM test
             best, pcol, hcol, model = tk.sort_values("km_p"), "km_p", None, "KM"
         b = best.iloc[0] if len(best) else None
@@ -122,37 +163,47 @@ def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "iqr
             event_type=ds.events.at[eid, "event_type"], cohorts_cox_tested=len(t),
             cox_p05=len(sig), cox_p05_hr_up=int((sig[hr] > 1).sum()), cox_p05_hr_down=int((sig[hr] < 1).sum()),
             expected_by_chance=round(alpha * len(t), 2), adj_cohorts_tested=len(ta), adj_cox_p05=len(sig_a),
-            group_hits=int(d.group_hit.fillna(False).astype(bool).sum()),
-            within_patient=int(d.within_patient_support.fillna(False).astype(bool).sum()),
-            group_and_survival=int((d.group_hit.fillna(False).astype(bool) & surv_hit).sum()),
+            adj_cox_p05_low_power=int(_low(sig_a, "adj_cox_low_power").sum()),
+            cox_p05_low_power=int(_low(sig, "cox_low_power").sum()),
+            group_hits=int(_true(d.group_hit).sum()),
+            within_patient=int(_true(d.within_patient_support).sum()),
+            group_and_survival=int((_true(d.group_hit) & surv_hit).sum()),
             share_hr_up=round(float((t[hr] > 1).mean()), 2) if len(t) else np.nan,
             km_tested=len(tk), km_p05=int((tk.km_p < alpha).sum()),
             best_cohort=None if b is None else b.cohort,
             **{f"best_{hr}": np.nan if b is None or hcol is None else b[hcol]},
             best_logrank_hr=np.nan if b is None or model != "KM" else b.logrank_hr,
             best_p=np.nan if b is None else b[pcol], best_model=model if b is not None else "",
+            best_low_power=_flag(None if b is None else
+                                 b.get({"adjusted": "adj_cox_low_power", "base": "cox_low_power"}.get(model, ""))),
             **{f"best_psi_{unit}": np.nan if b is None or model == "KM" else b[f"psi_{unit}"]},
             min_cox_q=float(t.cox_q.min()) if len(t) else np.nan))
     ev = pd.DataFrame(rows)
     if ev.empty:
         return ev
     ev["measurable"] = (ev.cohorts_cox_tested > 0) | (ev.km_tested > 0)
-    ev = ev.sort_values(["measurable", "adj_cox_p05", "cox_p05", "group_and_survival", "km_p05", "best_p"],
-                        ascending=[False, False, False, False, False, True], na_position="last",
-                        kind="stable").reset_index(drop=True)
+    ev = ev.assign(_adj=ev.adj_cox_p05 - ev.adj_cox_p05_low_power, _base=ev.cox_p05 - ev.cox_p05_low_power)
+    ev = ev.sort_values(["measurable", "_adj", "_base", "group_and_survival", "km_p05", "adj_cox_p05_low_power",
+                         "cox_p05_low_power", "best_p"], ascending=[False] * 7 + [True], na_position="last",
+                        kind="stable").drop(columns=["_adj", "_base"]).reset_index(drop=True)
     ev.insert(0, "rank", np.arange(1, len(ev) + 1))
     return ev
 
 
-def pick_cohorts(cells: pd.DataFrame, event: str, n: int = 3) -> list[str]:
-    """The event's most promising cohorts: smallest adjusted Cox p, then base Cox p, then KM p."""
+def pick_cohorts(cells: pd.DataFrame, event: str, n: int = 3, alpha: float = 0.05) -> list[str]:
+    """The event's most promising cohorts: Cox p < alpha in a fit that is not low power, then in a low-power fit, then
+    the rest (the adjusted model where fitted, else the base model); within each, the smallest adjusted Cox p, then
+    base Cox p, then KM p."""
     d = cells[cells.event_id.eq(event)].copy()
     d["_a"] = d.get("adj_cox_p", pd.Series(np.nan, index=d.index)).where(
         d.get("adj_cox_status", pd.Series("", index=d.index)).eq("tested"))
     d["_b"] = d.cox_p.where(d.cox_status.eq("tested")) if "cox_p" in d else np.nan
     d["_k"] = d.km_p.where(d.km_status.eq("tested")) if "km_p" in d else np.nan
     d = d[d[["_a", "_b", "_k"]].notna().any(axis=1)]
-    d = d.sort_values(["_a", "_b", "_k"], na_position="last")
+    has_a = d._a.notna()
+    d["_t"] = _tier(d._a.where(has_a, d._b), _low(d, "adj_cox_low_power").where(has_a, _low(d, "cox_low_power")),
+                    alpha)
+    d = d.sort_values(["_t", "_a", "_b", "_k"], na_position="last", kind="stable")
     return d.cohort.head(n).tolist()
 
 
@@ -170,7 +221,7 @@ def parse_top(v) -> int:
 
 
 def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settings, max_rows: int = 60):
-    """Events (rows, rank order) x cohorts: HR per IQR or SD (adjusted when fitted, else base) in colour, p < alpha as a
+    """Events (rows, rank order) x cohorts: HR per SD or IQR (adjusted when fitted, else base) in colour, p < alpha as a
     dot, a group hit as a frame; grey = not tested."""
     import matplotlib
     from matplotlib.colors import LinearSegmentedColormap, Normalize
@@ -184,7 +235,21 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
     nr, nc = len(ev), len(cohorts)
     cell_w, cell_h = min(0.2, 5.6 / max(nc, 1)), 0.17
     label_w = max([S.text_width(f"{r.label}  {r.gene}", 6.0) for r in ev.itertuples()] + [0.8]) + 0.25
-    W = max(4.5, label_w + nc * cell_w + 0.4)
+    v = _value_name(ev.event_type)
+    shown = cells[cells.event_id.isin(ev.event_id)]                       # the fit each cell shows: adjusted, else base
+    adj = shown["adj_cox_status"].eq("tested") if "adj_cox_model" in shown else pd.Series(False, index=shown.index)
+    names = pd.concat([shown.loc[adj, "adj_cox_model"] if adj.any() else pd.Series(dtype=str),
+                       shown.loc[~adj & shown.cox_status.eq("tested"), "cox_model"]]).astype(str)
+    pen = names[names.str.contains("; ridge λ", regex=False)]
+    ridge = "" if pen.empty else f"; ridge λ {s.cox_ridge_penalty:g} on " + {
+        "clinical": "clinical terms", "all": "all terms",
+        "molecular": v + (" and host expression" if pen.str.contains("host expression", regex=False).any() else "")
+    }[s.cox_ridge]
+    caption = (f"colour: HR per {s.psi_hr_unit.upper()} of {v} (adjusted model where fitted{ridge})"
+               + f"; dot: p < {s.alpha:g} (large: < 0.01)"
+               + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
+               + "; frame: group hit; grey: not tested")
+    W = max(4.5, label_w + nc * cell_w + 0.4, 0.24 + S.text_width(caption, 5.8))     # the caption fits
     H = 0.95 + max(nr, 1) * cell_h + 0.75
     cmap = LinearSegmentedColormap.from_list("hr", ["#2f5f98", "#9ebbd9", "#f4f3ee", "#e6a88a", "#b0412c"])
     norm = Normalize(-1.5, 1.5)
@@ -221,11 +286,7 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
             sp.set_visible(False)
         ax.xaxis.tick_top()
         fig.text(0.12 / W, 1 - 0.1 / H, f"Probe overview · {endpoint}", fontsize=8.5, fontweight="bold", va="top")
-        fig.text(0.12 / W, 1 - 0.3 / H, f"colour: HR per {s.psi_hr_unit.upper()} of {_value_name(ev.event_type)} "
-                 "(adjusted model "
-                 f"where fitted); dot: p < {s.alpha:g} (large: < 0.01)"
-                 + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
-                 + "; frame: group hit; grey: not tested", fontsize=5.8, color=S.INK2, va="top")
+        fig.text(0.12 / W, 1 - 0.3 / H, caption, fontsize=5.8, color=S.INK2, va="top")
         cax = fig.add_axes([label_w / W, 0.25 / H, min(1.6, nc * cell_w) / W, 0.08 / H])
         grad = np.linspace(-1.5, 1.5, 256)[None, :]
         cax.imshow(grad, aspect="auto", cmap=cmap, norm=norm, extent=(-1.5, 1.5, 0, 1))
@@ -265,23 +326,24 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
     ev = select_events(ds, genes, events, include_hit)
     hit_left = 0 if events or include_hit else len(select_events(ds, genes, None, True)) - len(ev)
     cohorts = None if not cohorts or [str(c).lower() for c in cohorts] == ["all"] else list(cohorts)
+    base_model = model or CoxModel()
     found = {}
-    if adjusted == "auto":
-        ds, adj_model, found = auto_clinical(ds)
+    if adjusted == "auto":                              # the base model plus the age, sex and stage found
+        ds, auto, found = auto_clinical(ds, keep=base_model.clinical_columns)
+        adj_model = None if auto is None else clinical_adjusted(base_model, auto, found)
         if adj_model is not None and baseline:
             adj_model = adj_model.with_clinical(baseline=baseline)
     else:
         adj_model = adjusted or None
-    base_model = model or CoxModel()
     if s.changed():
         log(f"settings changed from the defaults: {s.changed_text()}")
     if hit_left:
         log(f"{hit_left} HIT-index event(s) left out (--include-hit adds them)")
     log(f"probe: {len(ev)} event(s) x {len(cohorts or ds.cohorts)} cohort(s), {ep}; base Cox "
-        f"{base_model.describe(ds.expression is not None)}"
-        + (f"; adjusted {adj_model.describe(ds.expression is not None)}" if adj_model else "; no adjusted model"))
-    base = analyse(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=base_model)
-    adj = analyse(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=adj_model) if adj_model else None
+        f"{_describe(base_model, ds, ev, s)}"
+        + (f"; adjusted {_describe(adj_model, ds, ev, s)}" if adj_model else "; no adjusted model"))
+    base = analyze(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=base_model)
+    adj = analyze(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=adj_model) if adj_model else None
     cells = combine(base, adj, ep)
     ranked = rank_events(cells, ds, s.alpha, s.psi_hr_unit)
     ptab, pchanges = None, {}
@@ -298,11 +360,11 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
     genes_x = [g for g in dict.fromkeys(ds.events.loc[ev, "expression_gene"])
                if ds.expression is not None and g in ds.expression.index]
     if gex and genes_x:
-        from .analysis import analyse_expression
+        from .analysis import analyze_expression
         gm = CoxModel(expression=False, covariates=(adj_model or base_model).covariates,
                       categorical=(adj_model or base_model).categorical, strata=(adj_model or base_model).strata,
                       baseline=dict((adj_model or base_model).baseline))
-        gex_cells = analyse_expression(ds, genes=genes_x, endpoints=[ep], cohorts=cohorts, settings=s,
+        gex_cells = analyze_expression(ds, genes=genes_x, endpoints=[ep], cohorts=cohorts, settings=s,
                                        model=gm).cells()
     out = ProbeResult(cells, ranked)
     if out_dir is None:
@@ -328,7 +390,7 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
         if r.event_id not in drawable:
             continue
         focus = [c for c in (cohorts or []) if c in set(cells.cohort)][:top] if cohorts and len(cohorts) <= top \
-            else pick_cohorts(cells, r.event_id, top)
+            else pick_cohorts(cells, r.event_id, top, s.alpha)
         if focus:
             focus_of[r.event_id] = focus
     import matplotlib
@@ -396,6 +458,40 @@ def _slice(res: Results, event: str) -> Results:
 
 
 KM_RULES = {"km_split", "km_split_expression"}      # settings that move the KM split rather than relax a gate
+GATES = {"min_pairs", "min_group", "coverage_frac", "min_off_modal", "km_min_group", "km_min_events", "cox_min_n",
+         "cox_min_events", "cox_min_events_per_term", "fdr_min_family", "low_psi_variance_sd"}   # minimums of a test
+
+
+def _ridge_line(cells: pd.DataFrame, s: Settings, v: str, base_clinical: bool) -> str | None:
+    """The report's line on a ridge penalty, for the models it reached (from their fitted names), in the scope's
+    terms; None when no fitted model was penalized. `base_clinical`: whether the base model has clinical terms."""
+    models = (("base", "cox_status", "cox_model"), ("adjusted", "adj_cox_status", "adj_cox_model"))
+    fits = {w: cells.loc[cells[st].eq("tested") & cells[mo].astype(str).str.contains("; ridge λ", regex=False), mo]
+            .astype(str) if st in cells and mo in cells else pd.Series(dtype=str) for w, st, mo in models}
+    which = [w for w, names in fits.items() if len(names)]
+    if not which:
+        return None
+    expr = any(names.str.contains("host expression", regex=False).any() for names in fits.values())
+    clin = s.cox_ridge == "all" and ("adjusted" in which or base_clinical)   # clinical terms among the penalized
+    one = not (expr or clin or s.cox_ridge == "clinical")                  # one penalized term: the PSI term
+    terms = "the clinical terms" if s.cox_ridge == "clinical" else f"the {v} term" if one else \
+        f"the {v} and host-expression terms" if s.cox_ridge == "molecular" else "all terms"
+    partial = (f"adjust {v} only partly: its HR stays closer to the HR without them, and an association that full "
+               "adjustment would weaken can survive it")
+    if s.cox_ridge == "clinical":
+        what = f"they are shrunk jointly toward HR 1, so they {partial}"
+    elif one:
+        what = "its HR is shrunk toward 1"
+    else:                     # jointly: one HR can move away from 1 when terms are correlated
+        what = (f"they are shrunk jointly toward HR 1, though a single HR ({v}'s too) can move away from 1 when "
+                "terms are correlated" + (f"; the clinical terms {partial}" if clin else ""))
+    return (f"- **Penalty:** ridge λ {s.cox_ridge_penalty:g} on {terms} of the {' and '.join(which)} "
+            f"model{'s' if len(which) > 1 else ''}: {what}. The CIs and p values of penalized terms are approximate.")
+
+
+def _relaxed(s: Settings) -> bool:
+    """Whether a gate (a minimum a test needs) is below its default."""
+    return any(k in GATES and v < d for k, (v, d) in s.changed().items())
 
 
 def _value_name(types) -> str:
@@ -419,7 +515,7 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
     name = (lambda r: f"{ds.events.at[r.event_id, 'label']} {r.cohort}")
     v = _value_name(ds.events.loc[cells.event_id.unique(), "event_type"])
     if len(t) and s.narrow_psi_below > 0:
-        nar = t[t.psi_narrow.fillna(False).astype(bool)]
+        nar = t[_true(t.psi_narrow)]
         sig = nar[nar.cox_p < s.alpha]
         out.append(f"- **Narrow {v} range** ({s.narrow_measure.upper()} of {v} below {s.narrow_psi_below:g} in "
                    f"the fit cohort, so the HR covers a few {v} points): {len(nar)} of {len(t)} base-model fits"
@@ -432,6 +528,34 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
                    f"{len(t)} base-model fits" + (f", {len(fa)} of {len(ta)} adjusted fits" if adj_model else "")
                    + (f" (cohorts: {', '.join(sorted(set(fb.cohort) | set(fa.cohort)))})" if len(fb) or len(fa) else "")
                    + ".")
+    if len(t) and s.cox_low_power_events > 0:
+        weak = (lambda d, col: d[d[col] < s.cox_low_power_events] if col in d else d.iloc[:0])
+        wb, wa = weak(t, "cox_events"), weak(ta, "adj_cox_events")
+        hit = wb.index[wb.cox_p < s.alpha].union(wa.index[wa.adj_cox_p < s.alpha] if len(wa) else wa.index)
+        sig = cells[cells.index.isin(hit)]                  # p < alpha in the base or the adjusted model
+        out.append(f"- **Low power** (fewer than {s.cox_low_power_events} events; ‡ in the forests and after p in the "
+                   f"ranked table): {len(wb)} of {len(t)} base-model fits"
+                   + (f", {len(wa)} of {len(ta)} adjusted fits" if adj_model else "")
+                   + (f"; with p < {s.alpha:g}{' (base or adjusted model)' if adj_model else ''}: "
+                      f"{', '.join(name(r) for r in sig.itertuples())}" if len(sig) else "")
+                   + ". There, p ≥ 0.05 says little against an association.")
+    gone = (lambda d, col: d[d[col].fillna("").astype(str).str.contains("host expression left out", regex=False)]
+            if col in d else d.iloc[:0])
+    lb, la = gone(t, "cox_notes"), gone(ta, "adj_cox_notes")
+    if len(lb) or len(la):
+        out.append(f"- **Host expression left out** (no values for the host gene in the cohort, recorded for fewer "
+                   f"than {s.covariate_min_complete:.0%} of its patients, or constant; those fits have no expression "
+                   "term): "
+                   f"{len(lb)} of {len(t)} base-model fits"
+                   + (f", {len(la)} of {len(ta)} adjusted fits" if adj_model else "")
+                   + f" (cohorts: {', '.join(sorted(set(lb.cohort) | set(la.cohort)))}).")
+    if s.cox_min_events_per_term > 0:
+        cut = (lambda col: cells[cells[col].eq("too_few_events_per_term")] if col in cells else cells.iloc[:0])
+        cb, ca = cut("cox_status"), cut("adj_cox_status")
+        if len(cb) or len(ca):
+            out.append(f"- **Not fitted: too few events per term** (fewer than {s.cox_min_events_per_term:g} events "
+                       f"per estimated term, `cox_min_events_per_term`): {len(cb)} base-model and {len(ca)} adjusted "
+                       f"fits (cohorts: {', '.join(sorted(set(cb.cohort) | set(ca.cohort)))}).")
     if (len(t) or len(tk)) and s.ph_note_below > 0:
         low = (lambda d, col: d[d[col] < s.ph_note_below] if col in d else d.iloc[:0])
         pb, pk = low(t, "ph_p"), low(tk, "km_ph_p")
@@ -443,21 +567,37 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
                    + f"; the KM split in {len(pk)} of {len(tk)} log-rank tests. Look at the KM curves of those cells.")
     if not out:
         return out
+    stopped = s.cox_min_events_per_term > 0 and any(
+        cells.get(c, pd.Series(dtype=object, index=cells.index)).eq("too_few_events_per_term").any()
+        for c in ("cox_status", "adj_cox_status"))
     return ["## Notes on the survival tests", "", *out,
-            "- All are notes on the pages and in `cells.csv`; every test ran and no result is removed. Settings: "
+            "- All are notes on the pages and in `cells.csv`; every test ran"
+            + (" (except the fits the events-per-term minimum stopped)" if stopped else "")
+            + " and no result is removed. Settings: "
             "`narrow_psi_below`, `narrow_psi_measure` (default: the HR's unit, `psi_hr_unit`), `cox_events_per_term`, "
-            "`ph_note_below`.", ""]
+            "`cox_low_power_events`, `ph_note_below`.", ""]
 
 
 def _fmt(v, nd=2):
     return "–" if v is None or (isinstance(v, float) and not np.isfinite(v)) else f"{v:.{nd}f}"
 
 
+def _gex_cox_line(gex_cells: pd.DataFrame, s: Settings) -> str:
+    """The report's line on the host genes' own Cox fits: every cohort with p < alpha (by p), ‡ marking low power."""
+    t = gex_cells[gex_cells.cox_status.eq("tested")] if "cox_status" in gex_cells else gex_cells.iloc[:0]
+    sig = t[t.cox_p < s.alpha].sort_values("cox_p") if len(t) else t
+    low = sig.cox_low_power.map(_flag) if "cox_low_power" in sig else pd.Series(False, index=sig.index)
+    gene = (lambda r: f"{r.gene} " if gex_cells.gene.nunique() > 1 else "")
+    names = [f"{gene(r)}{r.cohort} HR {r.hr_per_sd:.2f}" + (" ‡" if lo else "") for r, lo in zip(sig.itertuples(), low)]
+    return (f"- **Cox:** {len(t)} cohort{'' if len(t) == 1 else 's'} tested; expression has p < {s.alpha:g} in "
+            f"{len(sig)}" + (f" ({', '.join(names)})" if names else "")
+            + (f"; ‡ fewer than {s.cox_low_power_events} events" if low.any() else "") + ".")
+
+
 def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pages, call, ptab=None,
             gex_cells=None, hit_left: int = 0) -> str:
     from .plot.style import fp
 
-    has_expr = ds.expression is not None
     from .plot.style import in_sentence
     cmp_ = f"{in_sentence(ds.labels['case'])}–{in_sentence(ds.labels['reference'])}"   # as named in the data
     n_cox = int(cells.cox_status.eq("tested").sum())
@@ -485,20 +625,21 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
           if (ds.notes or {}).get("subset") else None),
          f"- **Endpoint:** {ep}.",
          (f"- **Settings changed from the defaults:** {s.changed_text()}."
-          + (" Results that pass only these relaxed gates rest on fewer samples or events than the defaults require."
-             if set(s.changed()) - KM_RULES else "")
+          + (" Results that pass only these relaxed gates rest on fewer samples or events, or less variation, than "
+             "the defaults require." if _relaxed(s) else "")
           + (" The KM arms are split by the rule given, not at the median." if KM_RULES & set(s.changed()) else "")
           if s.changed() else None),
-         f"- **Base model** (the forest on every page): Cox {base_model.describe(has_expr)}.",
+         f"- **Base model** (the forest on every page): Cox {_describe(base_model, ds, cells.event_id.unique(), s)}.",
          ("- **Adjusted model** (the model rows on every page and the ranking): Cox "
-          f"{adj_model.describe(has_expr)}"
+          f"{_describe(adj_model, ds, cells.event_id.unique(), s)}"
           + (f"; baselines {', '.join(f'{k} {v}' for k, v in adj_model.baseline)}" if adj_model.baseline else "")
-          + (f"; columns found: {', '.join(f'{k} = {v}' for k, v in found.items())}" if found else "") + "."
+          + (f"; read from {found_summary(ds.clinical, found)}" if found else "") + "."
           if adj_model else "- **Adjusted model:** none (no clinical table, or no age/sex/stage column found)."),
+         _ridge_line(cells, s, v, bool(base_model.covariates)),
          f"- **Pages:** one per ranked, measurable event (at most {max_pages}). Each shows "
          + ("every cohort with a test" if top >= ALL else f"the event's {top} most promising cohorts")
-         + " (ordered by adjusted Cox p) with their models, and every cohort in the forest. Change with `--top N` "
-         "or `--top all`.",
+         + f" (Cox p < {s.alpha:g} first, low-power fits after the others within each; then by adjusted Cox p) "
+         "with their models, and every cohort in the forest. Change with `--top N` or `--top all`.",
          "",
          "## How much is chance",
          "",
@@ -533,7 +674,7 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
          "| Rank | Event | Type | Adj. p<.05 | Base p<.05 (↑/↓) | KM p<.05 | Expected | Group hits | Group + survival | "
          f"Best cohort | HR per {U} | p |" + (" Protein (suggested) |" if ptab is not None else "") + " Page |",
          "|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if ptab is not None else "") + "---|"]
-    flat = False
+    flat = marked = False
     for r in meas.head(max(40, max_pages)).itertuples():
         page = f"[page]({r.page})" if r.page else ""
         spread = getattr(r, f"best_psi_{s.psi_hr_unit}")
@@ -544,11 +685,20 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
         if ptab is not None:
             pc = getattr(r, "protein_change", "")
             prot = f" {pc if isinstance(pc, str) and pc else '–'} |"
-        p_txt = (fp(r.best_p) + (" (KM)" if r.best_model == "KM" else "")) if np.isfinite(r.best_p) else "–"
-        L.append(f"| {r.rank} | {r.label} ({r.gene}) | {r.event_type} | {r.adj_cox_p05} | {r.cox_p05} "
-                 f"({r.cox_p05_hr_up}/{r.cox_p05_hr_down}) | {r.km_p05} | {r.expected_by_chance:.1f} | {r.group_hits} | "
+        p_txt = (fp(r.best_p) + (" (KM)" if r.best_model == "KM" else "") + (" ‡" if r.best_low_power else "")) \
+            if np.isfinite(r.best_p) else "–"
+        low_a, low_b = r.adj_cox_p05_low_power, r.cox_p05_low_power
+        marked = marked or bool(low_a or low_b or r.best_low_power)
+        L.append(f"| {r.rank} | {r.label} ({r.gene}) | {r.event_type} | {r.adj_cox_p05}"
+                 + (f" ({low_a}‡)" if low_a else "") + f" | {r.cox_p05} ({r.cox_p05_hr_up}/{r.cox_p05_hr_down}"
+                 + (f"; {low_b}‡" if low_b else "") + f") | {r.km_p05} | {r.expected_by_chance:.1f} | {r.group_hits} | "
                  f"{r.group_and_survival} | {r.best_cohort or '–'} | {_fmt(getattr(r, f'best_hr_per_{s.psi_hr_unit}'))} "
                  f"| {p_txt} |{prot} {page} |")
+    if marked:
+        L += ["", f"‡ low power (fewer than {s.cox_low_power_events} Cox events): after p, the best cohort's fit; in "
+                  "the counts, how many of the hits are in such fits. The ranking counts those hits after the others. "
+                  "For the best cohort and the pages it prefers a hit in a fit that is not low power, then a "
+                  "low-power hit, then the other fits (those not low power first)."]
     if flat:
         L += ["", f"† {v} barely varies in the best cohort ({U} 0): the association rests on a few samples, and "
                   f"there is no HR per {U}."]
@@ -567,19 +717,15 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
               "- **Where:** the Protein column above; `proteins.csv` (transcripts, how they matched, residues, "
               "features); the band under the schematic on each page."]
     if gex_cells is not None and len(gex_cells):
-        t = gex_cells[gex_cells.cox_status.eq("tested")] if "cox_status" in gex_cells else gex_cells.iloc[:0]
-        sig = t[t.cox_p < s.alpha] if len(t) else t
         L += ["", "## Host-gene expression", "",
               f"- **What:** the same tests for the host gene's own expression ({', '.join(sorted(set(gex_cells.gene)))}): "
               "case vs reference, a KM split, and Cox on expression per SD plus the adjusted model's clinical terms. "
               "They have their own page per gene (`pages/<gene>_expression.png`, last in `probe.pdf`): a forest of "
               "every cohort, then the cohorts of the gene's splicing pages in full.",
-              f"- **Cox:** {len(t)} cohort{'' if len(t) == 1 else 's'} tested; expression has p < {s.alpha:g} in "
-              f"{len(sig)}"
-              + (f" ({', '.join(f'{r.cohort} HR {r.hr_per_sd:.2f}' for r in sig.sort_values('cox_p').head(6).itertuples())})"
-                 if len(sig) else "") + ".",
+              _gex_cox_line(gex_cells, s),
               "- **Reading:** a splicing association that holds while expression itself is not prognostic (or the "
-              "reverse) is easier to interpret; the splicing models already adjust for expression.",
+              "reverse) is easier to interpret; the splicing models adjust for expression wherever it is recorded (see "
+              "the notes above).",
               "- **Where:** `expression_cells.csv`."]
     L += ["", "## Files", "",
           "| File | Content |", "|---|---|",

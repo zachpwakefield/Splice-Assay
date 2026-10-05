@@ -14,10 +14,10 @@ authors = [{ name = "Zachary Wakefield" }]
 keywords = ["alternative splicing", "PSI", "rMATS", "survival analysis", "Kaplan-Meier", "tumour-normal"]
 dependencies = [
   "numpy>=1.24",
-  "pandas>=2.0",
+  "pandas>=2.1",                   # what lifelines >= 0.29 requires
   "scipy>=1.11",                   # stats.false_discovery_control (q values)
   "matplotlib>=3.7",
-  "lifelines>=0.27.8",              # 0.27.0-0.27.4 fail with pandas 2 (Series.iteritems); 0.27.7 needs pkg_resources
+  "lifelines>=0.29.0",             # 0.27.8 and 0.28 import scipy.integrate.trapz, which SciPy 1.14 removed
 ]
 
 [project.urls]

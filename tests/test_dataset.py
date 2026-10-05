@@ -4,7 +4,7 @@ import pytest
 
 import splice_assay as sa
 from splice_assay import InputError
-from splice_assay.dataset import derive_pairs, normalise_samples
+from splice_assay.dataset import derive_pairs, keep_ids, normalise_samples
 
 
 def test_wide_and_long_psi_are_the_same(tables):
@@ -124,7 +124,7 @@ def test_settings_roundtrip(tmp_path):
 
 def test_custom_group_names_and_columns_give_identical_results(tables):
     """Rename every column and both groups: the statistics must not change."""
-    base = sa.analyse(sa.Dataset.from_tables(**tables), events=["SYN1:SE:1"])
+    base = sa.analyze(sa.Dataset.from_tables(**tables), events=["SYN1:SE:1"])
     s = tables["samples"].assign(group=tables["samples"].group.map({"tumour": "Metastasis", "normal": "Primary"}))
     s = s.rename(columns={"sample_id": "File.ID", "patient_id": "Case.ID", "cohort": "project", "group": "site"})
     sv = tables["survival"].rename(columns={"patient_id": "Case.ID"})
@@ -134,7 +134,7 @@ def test_custom_group_names_and_columns_give_identical_results(tables):
     ds = sa.Dataset.from_tables(samples=s, psi=ps, events=tables["events"], survival=sv, expression=ex,
                                 case="metastasis", reference="primary", columns=cols)
     assert ds.labels == dict(case="Metastasis", reference="Primary")
-    alt = sa.analyse(ds, events=["SYN1:SE:1"])
+    alt = sa.analyze(ds, events=["SYN1:SE:1"])
     num = ["paired_p", "paired_delta_median", "unpaired_p", "unpaired_delta_median"]
     assert np.allclose(base.groups[num].to_numpy(float), alt.groups[num].to_numpy(float), equal_nan=True)
     num = ["cutoff", "km_p", "cox_beta", "cox_se", "hr_per_iqr"]
@@ -191,8 +191,8 @@ def test_two_tables_are_enough(tables):
     pd.testing.assert_frame_equal(one.clinical.sort_index(), two.clinical.sort_index(), check_like=True)
     pd.testing.assert_frame_equal(one.pairs, two.pairs)
     m = sa.CoxModel().with_clinical(("age", "stage"))
-    a = sa.analyse(one, events=["SYN1:SE:1"], model=m).survival
-    b = sa.analyse(two, events=["SYN1:SE:1"], model=m).survival
+    a = sa.analyze(one, events=["SYN1:SE:1"], model=m).survival
+    b = sa.analyze(two, events=["SYN1:SE:1"], model=m).survival
     pd.testing.assert_frame_equal(a, b)
 
 
@@ -310,3 +310,81 @@ def test_where_on_the_command_line(tables, tmp_path, capsys):
         tables[name].to_csv(d / f"{name}.csv", index=False)
     assert main(["validate", str(d), "--where", "sex=female", "--where", "cohort=COH1,COH2"]) == 0
     assert "selected by sex = female and cohort = COH1 or COH2" in capsys.readouterr().out
+
+
+def _tiny(pids, **cols):
+    """A samples table (one tumour and one normal sample per patient, in cohort C, plus `cols`) and a psi table."""
+    rows = [dict(sample_id=f"{p}-{k}", patient_id=p, cohort="C", group=g, **{c: v[i] for c, v in cols.items()})
+            for i, p in enumerate(pids) for k, g in (("T", "tumour"), ("N", "normal"))]
+    s = pd.DataFrame(rows)
+    return s, pd.DataFrame({"event_id": ["E1"], "gene": ["G"], **{x: [0.5] for x in s.sample_id}})
+
+
+def test_keep_lists_are_read_as_text(tmp_path):
+    """A listed ID keeps its leading zeros under any header, and a list without a header keeps its first ID."""
+    s, psi = _tiny(["00123", "123"])
+    (tmp_path / "keep.csv").write_text("id\n00123\n")
+    assert keep_ids(tmp_path / "keep.csv") == ["00123"]
+    kept = sa.Dataset.from_tables(s, psi, keep=tmp_path / "keep.csv")
+    assert sorted(kept.samples.patient_id.unique()) == ["00123"]
+    (tmp_path / "one.txt").write_text("00123\n")                          # no header: the first line is an ID
+    with pytest.warns(UserWarning, match="no header"):
+        kept = sa.Dataset.from_tables(s, psi, keep=tmp_path / "one.txt")
+    assert sorted(kept.samples.patient_id.unique()) == ["00123"]
+    (tmp_path / "two.txt").write_text("123\n00123\n")
+    with pytest.warns(UserWarning, match="no header"):
+        assert sa.Dataset.from_tables(s, psi, keep=tmp_path / "two.txt").samples.patient_id.nunique() == 2
+    for name, text in (("header.csv", "patient_id\n"), ("nothing.txt", ""), ("blank.txt", "\n\n")):
+        (tmp_path / name).write_text(text)
+        with pytest.raises(InputError, match="the keep list is empty"):
+            sa.Dataset.from_tables(s, psi, keep=tmp_path / name)
+    with pytest.raises(InputError, match="keep: cannot read"):
+        sa.Dataset.from_tables(s, psi, keep=tmp_path / "missing.csv")
+
+
+def test_repeated_where_conditions_must_all_hold():
+    s, psi = _tiny(["P1", "P2", "P3"], stage=["I", "II", "III"])
+    ds = sa.Dataset.from_tables(s, psi, where=["stage=I,II", "stage=II,III"])
+    assert sorted(ds.samples.patient_id.unique()) == ["P2"]
+    assert ds.notes["subset"]["by"] == "stage = I or II and stage = II or III"
+
+
+def test_sample_keyed_tables_with_a_subset():
+    """Survival and clinical tables keyed by sample_id may list samples that a subset leaves out, and where reads a
+    sample-keyed clinical table; a sample unknown to the samples table is still an error."""
+    s, psi = _tiny(["P1", "P2", "P3"])
+    sv = pd.DataFrame({"sample_id": ["P1-T", "P2-T", "P3-T"], "OS.time": [100, 200, 300], "OS": [1, 0, 1]})
+    cl = pd.DataFrame({"sample_id": ["P1-T", "P2-T", "P3-T"], "age": [50, 60, 70]})
+    ds = sa.Dataset.from_tables(s, psi, survival=sv, clinical=cl, keep=["P1", "P2"])
+    assert sorted(ds.samples.patient_id.unique()) == ["P1", "P2"] and ds.clinical.loc["P2", "age"] == 60
+    assert {"P1", "P2"} <= set(ds.survival.patient_id)
+    by_age = sa.Dataset.from_tables(s, psi, survival=sv, clinical=cl, where=["age=50"])
+    assert sorted(by_age.samples.patient_id.unique()) == ["P1"]
+    with pytest.raises(InputError, match="sample_id not in samples"):
+        sa.Dataset.from_tables(s, psi, survival=sv.assign(sample_id=["P1-T", "P2-T", "P9-T"]), keep=["P1"])
+
+
+def test_where_matches_numbers_by_value_and_never_a_missing_value():
+    s, psi = _tiny(["P1", "P2", "P3", "P4"], grade=[1.0, 2.0, np.nan, 1.0])
+    assert sorted(sa.Dataset.from_tables(s, psi, where=["grade=1"]).samples.patient_id.unique()) == ["P1", "P4"]
+    assert sorted(sa.Dataset.from_tables(s, psi, where=["grade=1.0,2"]).samples.patient_id.unique()) == ["P1", "P2",
+                                                                                                         "P4"]
+    with pytest.raises(InputError, match="no patient is selected"):
+        sa.Dataset.from_tables(s, psi, where=["grade=nan"])
+
+
+def test_a_listed_id_that_is_a_patient_selects_only_that_patient():
+    """1-2 is a patient: it does not also select patient 1; an unknown 1-3 selects 1, its longest known part."""
+    s, psi = _tiny(["1", "1-2", "TCGA-XX-0001"])
+    pick = (lambda ids: sorted(sa.Dataset.from_tables(s, psi, keep=ids).samples.patient_id.unique()))
+    assert pick(["1-2"]) == ["1-2"]
+    assert pick(["1-3"]) == ["1"]
+    assert pick(["TCGA-XX-0001-01A-11R-0000-07"]) == ["TCGA-XX-0001"]
+    assert pick(["TCGA-XX-0001-T"]) == ["TCGA-XX-0001"]                   # a sample ID
+
+
+def test_where_matches_long_numeric_codes_exactly():
+    """Numbers past 2**53 are not exact as floats: such codes match as text only."""
+    s, psi = _tiny(["P1", "P2"], code=["12345678901234567", "12345678901234568"])
+    ds = sa.Dataset.from_tables(s, psi, where=["code=12345678901234567"])
+    assert sorted(ds.samples.patient_id.unique()) == ["P1"]

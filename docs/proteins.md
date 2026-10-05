@@ -106,6 +106,10 @@ transcripts, the coding one with the best support is used.
   - The frame is the length difference of the two forms modulo 3.
   - A stop codon inside an unannotated insertion cannot be seen, and the sentence says so.
 - **Other outcomes.** The event can lie in a UTR (the protein is unchanged) or hold the start or stop codon.
+  - The stop codon is the three nucleotides after the last coding one, since the cache's coding coordinates leave it
+    out. A region that holds it but no coding nucleotide changes the protein's end; it is not called 3′ UTR.
+  - When both chosen transcripts encode the same protein, the sentence says so. It adds that the event lies outside
+    the coding sequence only when no coding residue is at the event.
 - **Pairs that differ elsewhere.** When the pair also differs elsewhere, the sentence says how much coding sequence
   they share. Below 50%, only the transcript carrying the event is drawn.
 - **Features.** A feature on one transcript's event exons is "only with" that form when the other protein has no

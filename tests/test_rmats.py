@@ -86,3 +86,18 @@ def test_import_as_one_table(rmats_dir, tmp_path):
     long = pd.read_csv(two / "psi.csv").pivot(index="event_id", columns="sample_id", values="psi")
     pd.testing.assert_frame_equal(t.set_index("event_id")[["s1", "s2"]].sort_index(),
                                   long[["s1", "s2"]].sort_index(), check_names=False)
+
+
+def test_a_type_without_events_is_skipped(rmats_dir):
+    """rMATS writes every type's file, only a header when it found no event of that type (e.g. a small GTF)."""
+    (rmats_dir / "MXE.MATS.JCEC.txt").write_text(HEAD + COLS["MXE"] + TAIL + "\n")
+    events, psi = import_rmats(rmats_dir, rmats_dir / "b1.txt", rmats_dir / "b2.txt")
+    assert set(events.event_type) == {"SE", "RI", "A3SS", "A5SS"} and set(psi.event_id) == set(events.event_id)
+    for t in COLS:
+        (rmats_dir / f"{t}.MATS.JCEC.txt").write_text(HEAD + COLS[t] + TAIL + "\n")
+    with pytest.raises(InputError, match="no rMATS events found in the JCEC files of SE, RI, A3SS, A5SS, MXE"):
+        import_rmats(rmats_dir, rmats_dir / "b1.txt", rmats_dir / "b2.txt")
+    for broken in ("", "\n\n"):                                        # not even a header: a broken output
+        (rmats_dir / "SE.MATS.JCEC.txt").write_text(broken)
+        with pytest.raises(InputError, match="the file is empty"):
+            import_rmats(rmats_dir, rmats_dir / "b1.txt", rmats_dir / "b2.txt")

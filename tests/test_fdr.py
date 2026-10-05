@@ -24,9 +24,9 @@ def test_gene_fdr_families():
     assert small[small.gene.eq("A") & small.endpoint.eq("DSS")].cox_q.notna().all()
 
 
-def test_analyse_gives_q_within_each_gene(ds):
+def test_analyze_gives_q_within_each_gene(ds):
     s = sa.Settings(fdr_min_family=2)
-    r = sa.analyse(ds, endpoints=["OS"], settings=s)
+    r = sa.analyze(ds, endpoints=["OS"], settings=s)
     for test, table, by in (("paired", r.groups, ["gene"]), ("unpaired", r.groups, ["gene"]),
                             ("km", r.survival, ["gene", "endpoint"]), ("cox", r.survival, ["gene", "endpoint"])):
         assert f"{test}_q" in table.columns
@@ -35,15 +35,15 @@ def test_analyse_gives_q_within_each_gene(ds):
                 assert np.allclose(d[f"{test}_q"], false_discovery_control(d[f"{test}_p"].to_numpy(), method="bh"))
     # the default family minimum (10) leaves the synthetic genes' small families without q (SYN3's HIT-index events,
     # which would form a family of their own, are left out by default)
-    g = sa.analyse(ds, endpoints=["OS"]).groups
+    g = sa.analyze(ds, endpoints=["OS"]).groups
     assert g.paired_q.isna().all() and not g.event_id.str.contains(":HIT:").any()
 
 
 def test_hit_index_forms_its_own_families(ds):
     """Including the HIT index changes no PSI q value: HIT-index tests are families of their own."""
     s = sa.Settings(fdr_min_family=2)
-    a = sa.analyse(ds, endpoints=["OS"], settings=s)
-    b = sa.analyse(ds, endpoints=["OS"], settings=s, include_hit=True)
+    a = sa.analyze(ds, endpoints=["OS"], settings=s)
+    b = sa.analyze(ds, endpoints=["OS"], settings=s, include_hit=True)
     for x, y in ((a.groups, b.groups), (a.survival, b.survival)):
         hit = y.event_id.str.contains(":HIT:")
         assert hit.any() and not x.event_id.str.contains(":HIT:").any()

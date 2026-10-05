@@ -19,7 +19,7 @@ def ds(tables):
 
 @pytest.fixture(scope="session")
 def results(ds):
-    return sa.analyse(ds)
+    return sa.analyze(ds)
 
 
 @pytest.fixture(scope="session")

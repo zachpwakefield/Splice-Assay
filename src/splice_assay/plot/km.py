@@ -43,8 +43,10 @@ def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag:
     for arm, col, lab in ((False, S.KM_LOW, low_lab), (True, S.KM_HIGH, high_lab)):
         ta, ea = t[high == arm], e[high == arm]
         cu = _curve(ta, ea, s.ci_z)
-        ax.fill_between(cu.t, cu.lo, cu.hi, step="post", color=col, alpha=0.13, lw=0, zorder=1)
-        ax.step(cu.t, cu.s, where="post", color=col, lw=1.3, zorder=3)
+        # arrays, not Series: with matplotlib 3.7.0 and numpy 1.24, fill_between fails on a pandas >= 2.1 Series
+        ax.fill_between(cu.t.to_numpy(), cu.lo.to_numpy(), cu.hi.to_numpy(), step="post", color=col, alpha=0.13,
+                        lw=0, zorder=1)
+        ax.step(cu.t.to_numpy(), cu.s.to_numpy(), where="post", color=col, lw=1.3, zorder=3)
         cens = ta[(ea == 0) & (ta <= tmax)]
         ax.scatter(cens, [cu.s[cu.t <= c].iloc[-1] for c in cens], marker="|", s=7, color=col, lw=0.5, zorder=4)
         send = float(cu.s[cu.t <= tmax].iloc[-1])
@@ -54,7 +56,7 @@ def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag:
         rows += [dict(panel="km_at_risk", tag=tag, arm=lab, time_years=x, n_at_risk=n) for x, n in zip(ticks, risk[lab][1])]
     # curve-end labels, nudged apart when close
     ends = {lab: v[2] for lab, v in risk.items()}
-    up, dn = max(ends, key=ends.get), min(ends, key=ends.get)
+    dn, up = sorted(ends, key=ends.get)                 # two labels even when the curves end level (e.g. both at 0)
     if ends[up] - ends[dn] < 0.09:
         mid = (ends[up] + ends[dn]) / 2
         ends[up], ends[dn] = mid + 0.045, mid - 0.045

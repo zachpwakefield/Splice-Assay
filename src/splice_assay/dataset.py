@@ -38,10 +38,14 @@ Fewer tables: the samples table may carry the patient-level columns, and the psi
 So two tables (samples, psi) are enough; separate tables are still read, and take precedence.
 
 Subsets: `keep` (--keep FILE) restricts the run to the patients listed (e.g. one subtype). A listed ID selects a
-patient when it is that patient's patient_id or one of its sample_ids, or begins with either followed by "-" (so
-TCGA aliquot barcodes select their patient). `where` (--where COLUMN=VALUE[,VALUE...], repeatable) selects the
-patients whose clinical row, or any of whose samples, has one of the values in that column (case-insensitive); every
-condition must hold, and with keep both apply. All samples of a selected patient are kept, so its normals stay.
+patient when it is that patient's patient_id or one of its sample_ids; any other ID selects the patient of its longest
+leading part, up to a "-", that is one (so TCGA aliquot barcodes select their patient). IDs are read as text; a list
+without a header line works too (its first line is read as an ID when it names a patient or sample). `where`
+(--where COLUMN=VALUE[,VALUE...], repeatable) selects the patients whose clinical row, or any of whose samples, has
+one of the values in that column (case-insensitive text, or numbers by value: 1 matches 1.0; a missing value matches
+nothing); every condition must hold, also two on one column, and with keep both apply. All samples of a selected
+patient are kept, so its normals stay. Tables keyed by sample_id (survival, clinical) may list samples that the subset
+leaves out.
 """
 from __future__ import annotations
 
@@ -335,54 +339,78 @@ def normalise_psi(df: pd.DataFrame, samples: pd.DataFrame, event_ids=None, colum
     return wide
 
 
-def keep_ids(keep, column: str | None = None) -> list[str]:
-    """The IDs of a keep list: a list of IDs, or a table (CSV/TSV/Parquet) and its `column` (default the first)."""
+def _keep_list(keep, column: str | None = None) -> tuple[list[str], str | None]:
+    """The IDs of a keep list and, for a table read by its first column, that column's name (None otherwise). Every
+    cell is read as text, so an ID such as 00123 keeps its leading zeros."""
+    head = None
     if isinstance(keep, (str, Path)):
-        t = read_table(keep)
-        if t.empty:
-            raise InputError(f"{keep}: the keep list is empty")
+        p = Path(keep)
+        try:
+            if p.name.lower().endswith(".parquet"):
+                t = pd.read_parquet(p)
+            else:
+                sep = "\t" if p.name.lower().endswith((".tsv", ".txt", ".tsv.gz", ".txt.gz")) else ","
+                t = pd.read_csv(p, sep=sep, dtype=str, keep_default_na=False)
+        except pd.errors.EmptyDataError:                     # no line at all (or only blank ones)
+            return [], None
+        except OSError as e:
+            raise InputError(f"keep: cannot read {keep} ({e.strerror or e})") from None
         col = column or t.columns[0]
         if col not in t.columns:
             raise InputError(f"{keep}: no column {col} (found: {', '.join(map(str, t.columns))})")
+        head = None if column else str(col).strip()
         keep = t[col]
-    return [str(v).strip() for v in keep if pd.notna(v) and str(v).strip()]
+    return [str(v).strip() for v in keep if pd.notna(v) and str(v).strip()], head
 
 
-def _prefixes(ids) -> set[str]:
-    """Every ID and each of its leading '-'-separated parts (TCGA-XX-0001-01A-... -> TCGA-XX-0001, ...)."""
-    out = set()
-    for i in ids:
-        parts = i.split("-")
-        out |= {"-".join(parts[:k]) for k in range(1, len(parts) + 1)}
-    return out
+def keep_ids(keep, column: str | None = None) -> list[str]:
+    """The IDs of a keep list: a list of IDs, or a table (CSV/TSV/Parquet) and its `column` (default the first). IDs
+    are read as text."""
+    ids, _ = _keep_list(keep, column)
+    if not ids and isinstance(keep, (str, Path)):
+        raise InputError(f"{keep}: the keep list is empty")
+    return ids
 
 
-def where_conditions(where) -> dict[str, list[str]]:
-    """{column: [values]} from 'COLUMN=VALUE[,VALUE...]' strings or a dict: every column must match one of its values."""
+def where_conditions(where) -> list[tuple[str, list[str]]]:
+    """[(column, [values])] from 'COLUMN=VALUE[,VALUE...]' strings or a dict. Every condition must hold, each by one
+    of its values, so a column named in two conditions must meet both (stage=I,II and stage=II,III select II)."""
     if isinstance(where, dict):
-        return {str(k): [str(v)] if isinstance(v, str) else [str(x) for x in v] for k, v in where.items()}
-    out: dict[str, list[str]] = {}
+        return [(str(k), [str(v)] if isinstance(v, str) else [str(x) for x in v]) for k, v in where.items()]
+    out: list[tuple[str, list[str]]] = []
     for w in [where] if isinstance(where, str) else where:
         col, sep, vals = str(w).partition("=")
         values = [v.strip() for v in vals.split(",") if v.strip()]
         if not sep or not col.strip() or not values:
             raise InputError(f"where: expected COLUMN=VALUE[,VALUE...], not {w!r}")
-        out.setdefault(col.strip(), []).extend(values)
+        out.append((col.strip(), values))
     return out
 
 
-def _where_mask(raw: pd.DataFrame, clinical: pd.DataFrame | None, conds: dict[str, list[str]]) -> np.ndarray:
+def _where_hits(values: pd.Series, wanted) -> pd.Series:
+    """Cells equal to one of the wanted values: as text, ignoring case and surrounding spaces, or as numbers when both
+    are numbers (so 1 matches a column read as 1.0). A missing cell matches nothing."""
+    want = {str(v).strip().lower() for v in wanted}
+    hit = values.astype(str).str.strip().str.lower().isin(want)
+    exact = 2.0 ** 53                                       # beyond it floats are not exact: long codes match as text
+    nums = {float(x) for x in pd.to_numeric(pd.Series(sorted(want)), errors="coerce").dropna() if abs(x) < exact}
+    if nums:
+        num = pd.to_numeric(values, errors="coerce")
+        hit |= num.isin(nums) & (num.abs() < exact)
+    return hit & values.notna()
+
+
+def _where_mask(raw: pd.DataFrame, clinical: pd.DataFrame | None, conds: list[tuple[str, list[str]]]) -> np.ndarray:
     """Rows (samples) of patients meeting every condition, read from the samples table (any of the patient's samples)
-    or else the clinical table (one row per patient); values compare case-insensitively."""
+    or else the clinical table (one row per patient); values compare as `_where_hits` says."""
     pid = raw["patient_id"].astype(str).str.strip()
     chosen = set(pid)
-    for col, vals in conds.items():
-        want = {v.lower() for v in vals}
+    for col, vals in conds:
         if col in raw.columns:
-            hit = pid[raw[col].astype(str).str.strip().str.lower().isin(want)]
+            hit = pid[_where_hits(raw[col], vals).to_numpy()]
         elif clinical is not None and col in clinical.columns and "patient_id" in clinical.columns:
             cp = clinical["patient_id"].astype(str).str.strip()
-            hit = cp[clinical[col].astype(str).str.strip().str.lower().isin(want)]
+            hit = cp[_where_hits(clinical[col], vals).to_numpy()]
         else:
             cols = list(raw.columns) + ([] if clinical is None else list(clinical.columns))
             raise InputError(f"where: no column {col} in the samples or clinical table (found: "
@@ -392,11 +420,21 @@ def _where_mask(raw: pd.DataFrame, clinical: pd.DataFrame | None, conds: dict[st
 
 
 def _keep_mask(raw: pd.DataFrame, ids) -> np.ndarray:
-    """Rows (samples) of patients selected by the keep list."""
+    """Rows (samples) of patients selected by the keep list. A listed ID that is a patient or sample ID selects that
+    patient; any other selects the patient of its longest leading '-'-separated part that is one (a TCGA aliquot
+    barcode TCGA-XX-0001-01A-11R-... selects TCGA-XX-0001), so an ID such as 1-2 never also selects patient 1."""
     sid = raw["sample_id"].astype(str).str.strip()
     pid = raw["patient_id"].astype(str).str.strip()
-    pre = _prefixes(ids)
-    chosen = set(pid[pid.isin(pre) | sid.isin(pre)])
+    owner = dict(zip(sid, pid))
+    patients = set(pid)
+    chosen = set()
+    for i in ids:
+        parts = str(i).split("-")
+        for k in range(len(parts), 0, -1):                 # the ID itself first, then shorter leading parts
+            key = "-".join(parts[:k])
+            if key in patients or key in owner:
+                chosen |= {key} & patients | ({owner[key]} if key in owner else set())
+                break
     return pid.isin(chosen).to_numpy()
 
 
@@ -675,13 +713,24 @@ class Dataset:
                 return None
             return with_missing(x, na_values) if isinstance(x, pd.DataFrame) else read_table(x, columns, na_values)
         raw_samples = load(samples)
-        subset = None
+        subset, id_map = None, None
         if keep is not None or where:                       # only the selected patients (and all their samples)
             raw_m = _map_columns(raw_samples, columns)
             _require(raw_m, "samples", ["sample_id", "patient_id"])
+            # every sample's patient, before the subset: tables keyed by sample_id may list samples left out
+            id_map = pd.DataFrame({c: _ids(raw_m[c], "samples", c).to_numpy() for c in ("sample_id", "patient_id")})
+            dup = id_map.sample_id[id_map.sample_id.duplicated()]
+            if len(dup):
+                raise InputError(f"samples: sample_id must be unique; repeated: {_examples(dup)}")
             mask, by, name, listed = np.ones(len(raw_m), bool), [], [], {}
             if keep is not None:
-                ids = keep_ids(keep, keep_column)
+                ids, head = _keep_list(keep, keep_column)
+                if head and _keep_mask(raw_m, [head]).any():   # a list without a header: its first line is an ID
+                    warnings.warn(f"keep: {keep} has no header; its first line ({head}) is read as an ID",
+                                  stacklevel=2)
+                    ids = [head] + ids
+                if not ids:
+                    raise InputError(f"{keep}: the keep list is empty")
                 m = _keep_mask(raw_m, ids)
                 if not m.any():
                     raise InputError(f"keep: none of the {len(ids)} listed IDs (e.g. {_examples(ids)}) is a patient or "
@@ -693,15 +742,17 @@ class Dataset:
                 name.append(Path(src).stem if src else f"{len(ids)} IDs")
             if where:
                 conds = where_conditions(where)
-                clin = None if clinical is None else _map_columns(load(clinical), columns)
+                clin = None if clinical is None else _patients(_map_columns(load(clinical), columns), id_map,
+                                                                "clinical")
                 mask &= _where_mask(raw_m, clin, conds)
-                by.append(" and ".join(f"{c} = {' or '.join(v)}" for c, v in conds.items()))
-                name.append(", ".join(f"{c}={'/'.join(v)}" for c, v in conds.items()))
+                by.append(" and ".join(f"{c} = {' or '.join(v)}" for c, v in conds))
+                name.append(", ".join(f"{c}={'/'.join(v)}" for c, v in conds))
             if not mask.any():
                 raise InputError(f"subset: no patient is selected by {' and '.join(by)}")
             subset = dict(patients=int(raw_m.patient_id[mask].nunique()), samples=int(mask.sum()),
                           of_patients=int(raw_m.patient_id.nunique()), by=" and ".join(by), name=", ".join(name),
-                          **listed)
+                          all_cohorts=sorted(set(raw_m["cohort"].dropna().astype(str).str.strip()))
+                          if "cohort" in raw_m.columns else [], **listed)
             raw_samples = raw_samples[mask].reset_index(drop=True)
         s, meta = normalise_samples(raw_samples, case, reference, columns)
         sources = {}
@@ -727,8 +778,9 @@ class Dataset:
         ev = ev.loc[p.index]
         own = _from_samples(_map_columns(raw_samples, columns).reset_index(drop=True), s,
                             endpoints if survival is None else None)
+        by_sample = s if id_map is None else id_map          # maps the sample_id of sample-keyed tables to patients
         if survival is not None:
-            sv, dropped = normalise_survival(load(survival), s, columns, endpoints)
+            sv, dropped = normalise_survival(load(survival), by_sample, columns, endpoints)
         elif own["survival"] is not None:
             sv, dropped = normalise_survival(own["survival"], s)
             sources["survival"] = f"samples table ({', '.join(sorted(sv.endpoint.unique()))})"
@@ -748,7 +800,7 @@ class Dataset:
         genes = None if event_ids is None else set(ev.expression_gene)
         ex = None if expression is None else normalise_expression(load(expression), s, genes, columns)
         if clinical is not None:
-            cl = normalise_clinical(load(clinical), s, columns)
+            cl = normalise_clinical(load(clinical), by_sample, columns)
         elif own["clinical"] is not None:
             try:
                 cl = normalise_clinical(own["clinical"], s)

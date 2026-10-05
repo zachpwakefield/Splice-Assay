@@ -1,5 +1,5 @@
-"""Twin forest: per cohort, the case-vs-reference delta (paired filled, unpaired open) beside the Cox HR per IQR (or
-per SD) of PSI. Without reference samples in the data only the HR side is drawn.
+"""Twin forest: per cohort, the case-vs-reference delta (paired filled, unpaired open) beside the Cox HR per SD (or
+per IQR) of PSI. Without reference samples in the data only the HR side is drawn.
 
 Rows are cohorts in which a plotted event had a tested comparison or a Cox fit (tested or failed), plus the cohorts
 shown at left. With two events each cohort has two sub-rows (first event ink, second grey).
@@ -14,6 +14,15 @@ from . import style as S
 
 NICE_LO, NICE_HI = (0.125, 0.25, 0.5), (2.0, 4.0, 8.0)
 PH_MARK = "†"                               # a proportional-hazards test below Settings.ph_note_below
+LOW_MARK = "‡"                              # a Cox fit with fewer events than Settings.cox_low_power_events
+
+
+def low_power(events, below: float) -> bool:
+    """A fit with fewer events than `below` (0 = never): it was run, but its power is low."""
+    try:
+        return bool(below > 0 and np.isfinite(float(events)) and float(events) < below)
+    except (TypeError, ValueError):
+        return False
 
 
 def axis_limits(recs_by_cohort: dict) -> tuple[float, float, float, int]:
@@ -35,7 +44,7 @@ def axis_limits(recs_by_cohort: dict) -> tuple[float, float, float, int]:
 
 
 def set_axes(axL, axR, lim, xlo, xhi, min_abs_delta, labels, model_note="", quantity="PSI",
-             hr_label="HR per IQR\nof PSI (95% CI)"):
+             hr_label="HR per SD\nof PSI (95% CI)"):
     """`quantity` names the delta axis (PSI, HIT index, expression); `hr_label` the HR axis."""
     if axL is not None:
         axL.set_xlim(-lim, lim)
@@ -59,12 +68,13 @@ def set_axes(axL, axR, lim, xlo, xhi, min_abs_delta, labels, model_note="", quan
 
 
 def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox_name, colors=None,
-         ph_below: float = 0.0, q_below: float = 0.0) -> dict:
-    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label; cox_q and ph_p
-    optional). axL may be None. After a CI, * when its q is below q_below (the fill shows p < alpha) and a dagger when
-    its proportional-hazards p is below ph_below; returns which of the two were drawn ({"q": bool, "ph": bool})."""
+         ph_below: float = 0.0, q_below: float = 0.0, low_below: float = 0.0) -> dict:
+    """recs_by_cohort[cohort][i]: values of event i (deltas, HR, CI, p, statuses, mark label; cox_q, ph_p and
+    cox_events optional). axL may be None. After a CI, * when its q is below q_below (the fill shows p < alpha), a
+    dagger when its proportional-hazards p is below ph_below, and a double dagger when the fit has fewer events than
+    low_below (low power); returns which were drawn ({"q": bool, "ph": bool, "low": bool})."""
     colors = colors or {}
-    marked = dict(q=False, ph=False)
+    marked = dict(q=False, ph=False, low=False)
     n = len(cohorts)
     offs = [0.0] if n_ev == 1 else [-0.24, 0.24]
     shades = [S.INK] if n_ev == 1 else [S.INK, S.SECOND]
@@ -110,12 +120,14 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
                             facecolor=col if r["cox_p"] < alpha else "white", edgecolor=col, lw=0.7, zorder=3)
                 q, ph = r.get("cox_q", np.nan), r.get("ph_p", np.nan)
                 after = [m for m, on in ((S.Q_MARK, q_below > 0 and q < q_below),
-                                         (PH_MARK, ph_below > 0 and ph < ph_below)) if on]
+                                         (PH_MARK, ph_below > 0 and ph < ph_below),
+                                         (LOW_MARK, low_power(r.get("cox_events"), low_below))) if on]
                 if after:
                     axR.annotate(" ".join(after), (min(hi, xhi), yy), xytext=(3, 0), textcoords="offset points",
                                  fontsize=6.0, color=col, ha="left", va="center", annotation_clip=False)
                     marked["q"] |= S.Q_MARK in after
                     marked["ph"] |= PH_MARK in after
+                    marked["low"] |= LOW_MARK in after
             elif r["cox_status"] == "failed":
                 axR.text(1.0, yy, f"{cox_name} fit failed", fontsize=5.2, color=S.MUTED, ha="center", va="center")
     for ax in axes:

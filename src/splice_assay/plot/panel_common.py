@@ -35,5 +35,15 @@ def page_parts(cohorts, n: int) -> list[list]:
     return out
 
 
+def model_mismatch(given, computed, what: str = "results=") -> str:
+    """The error text for a model given together with results computed with another model: both models and the
+    settings in which they differ (a page would otherwise name one model and draw the other's numbers)."""
+    a, b = given.to_dict(), computed.to_dict()
+    diff = "; ".join(f"{k}: {a[k]!r} vs {b[k]!r}" for k in a if a[k] != b[k])
+    return (f"the model ({given.describe(given.expression)}) is not the one {what} was computed with "
+            f"({computed.describe(computed.expression)}; they differ in {diff}). Leave the model out, or pass results "
+            "of this model")
+
+
 def safe_name(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", str(text)).strip("_")

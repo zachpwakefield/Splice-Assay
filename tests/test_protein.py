@@ -171,3 +171,46 @@ def _fast(tmp_path):
     p = tmp_path / "fast.json"
     p.write_text('{"formats": ["png"], "dpi": 60}')
     return p
+
+
+def _one_transcript():
+    """A coding transcript on the plus strand: exons 1-100 and 201-400, CDS 51-300; the stop codon (301-303) lies
+    outside the coding coordinates, as in GENCODE; 3' UTR 304-400."""
+    from splice_assay.protein import FEATURE_COLS
+    tx = pd.DataFrame(dict(transcript_id="T1", transcript_name="T1", transcript_type="protein_coding",
+                           transcript_support_level="1", gene_id="G", gene_name="G", chr="1", strand="+",
+                           start=[1, 201], end=[100, 400], exon_id=["e1", "e2"], cds_gen_start=[51, 201],
+                           cds_gen_stop=[100, 300], cds_rel_start=[1, 51], cds_rel_stop=[50, 150]))
+    cache = ProteinCache(tx, pd.DataFrame(dict(transcript_id=["T1"], protein_seq=["M" * 50])),
+                         pd.DataFrame(columns=FEATURE_COLS), "")
+    return cache, tx
+
+
+def test_the_stop_codon_follows_the_last_coding_nucleotide():
+    from splice_assay.protein import Check, ProteinChange, _effect, _isoform, _stop_codon
+    cache, tx = _one_transcript()
+    assert _stop_codon([(1, 100), (201, 400)], 300, "+") == [301, 302, 303]
+    assert _stop_codon([(1, 100), (201, 301), (351, 400)], 300, "+") == [301, 351, 352]   # across a junction
+    assert _stop_codon([(1, 100), (201, 400)], 211, "-") == [210, 209, 208]
+    assert _stop_codon([(1, 100), (201, 301)], 300, "+") == []                             # the transcript ends first
+    chk = Check(True, "eligible", "splice_site_only", (1,))
+    stop_only = _isoform(cache, tx, "INC", chk, [(301, 400)], "+")       # the stop codon and the 3' UTR, no residue
+    assert (stop_only.codon, stop_only.utr, stop_only.event_aa) == ("stop codon", "", [])
+    last_codons = _isoform(cache, tx, "INC", chk, [(251, 300)], "+")     # the last residues, not the stop codon
+    assert (last_codons.codon, last_codons.utr, last_codons.event_aa) == ("", "", [(34, 50)])
+    utr = _isoform(cache, tx, "INC", chk, [(321, 400)], "+")
+    assert (utr.codon, utr.utr) == ("", "3′ UTR")
+    eff = _effect(ProteinChange("E", "inclusion_only", "SE", inc=stop_only), _event("SYN1:SE:1")[1])
+    assert eff["kind"] == "end" and "holds the stop codon of T1 (after residue 50)" in eff["text"]
+
+
+def test_identical_proteins_from_coding_exons_are_not_called_utr():
+    from splice_assay.protein import Isoform, Match, ProteinChange, _effect
+    iso = (lambda form, t: Isoform(form, t, t, "protein_coding", 1, "junction_chain", True, "MKVLAAGIVG", [(4, 6)],
+                                   None, "", "", pd.DataFrame()))
+    pc = ProteinChange("E", "pair", "MXE", match=Match("pair", pairs=pd.DataFrame({"context_similarity": [1.0]})),
+                       inc=iso("INC", "T1"), exc=iso("EXC", "T2"))
+    eff = _effect(pc, _event("SYN2:MXE:1")[1])
+    assert eff["kind"] == "identical" and "although the event lies in the coding sequence" in eff["text"]
+    pc.inc.event_aa, pc.exc.event_aa = [], []
+    assert _effect(pc, _event("SYN2:MXE:1")[1])["kind"] == "utr"
