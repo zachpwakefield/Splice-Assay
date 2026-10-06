@@ -2,10 +2,10 @@
 
     python docs/make_figures.py
 
-It writes docs/example_panel.png (the README figure), the reading guide's crops in docs/reading/ and the probe overview
-used by the guide. The crops are pixel boxes of two pages drawn at 200 dpi (an assay page and the gene's expression
-page); the script stops when either page changes size, because the boxes then need adjusting (blank horizontal bands
-separate the pages' sections).
+It writes docs/example_panel.png (the README figure), the reading guide's crops in docs/reading/ and the probe overview,
+gene map and correlation figure used by the guide. The crops are pixel boxes of two pages drawn at 200 dpi (an assay
+page and the gene's expression page); the script stops when either page changes size, because the boxes then need
+adjusting (blank horizontal bands separate the pages' sections).
 """
 from __future__ import annotations
 
@@ -63,11 +63,13 @@ def main() -> None:
                 raise SystemExit(f"{stem} is {page.size} px, not {size}: adjust the crops in {__file__}")
             for name, (top, bottom) in crops.items():
                 page.crop((0, top, page.size[0], bottom)).save(OUT / f"{name}.png", optimize=True)
-        # the probe's overview, as the guide shows it
+        # the probe's overview, gene map and correlation figure, as the guide shows them
         r = probe(ds, genes=["SYN1"], settings=s, gtf=gtf, out_dir=Path(tmp) / "probe", max_pages=1,
-                  log=lambda *_: None)
+                  correlation=True, log=lambda *_: None)
         shutil.copy(r.paths["overview"], OUT / "08_overview.png")
-    print(f"wrote {DOCS / 'example_panel.png'} and {len(CROPS) + len(EXPRESSION_CROPS) + 1} figures in {OUT}")
+        shutil.copy(r.paths["gene_maps"], OUT / "09_gene_map.png")
+        shutil.copy(r.paths["correlation"], OUT / "10_correlation.png")
+    print(f"wrote {DOCS / 'example_panel.png'} and {len(CROPS) + len(EXPRESSION_CROPS) + 3} figures in {OUT}")
 
 
 if __name__ == "__main__":

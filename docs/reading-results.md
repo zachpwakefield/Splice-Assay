@@ -171,9 +171,15 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 | What was run | Events, cohorts, subset, endpoint, the two models as fitted (with the clinical columns read and their cleaned values), a ridge penalty and the terms it reached (`--ridge`), and any setting changed from the defaults |
 | How much is chance | For each model and KM: tests run, how many have p < 0.05, and how many chance alone would give |
 | Notes on the survival tests | How many fits carry each note (narrow PSI range, overfit risk, low power, host expression left out, non-proportional hazards), naming the flagged fits with p < 0.05, and how many fits `--min-events-per-term` stopped |
-| Ranked events | One row per event with its counts (with how many of the Cox hits are low power, ‡, which rank after the others), best cohort, HR, p (‡ when that fit has low power), the suggested protein change and a link to its page |
+| Ranked events | One row per event with its counts (with how many of the Cox hits are low power, ‡, which rank after the others), best cohort, HR, p (‡ when that fit has low power), the suggested protein change and a link to its page (§ when PSI barely varies in the best cohort, so there is no HR) |
 | Protein changes, Host-gene expression | What the suggestions and the expression page are, and where to find them |
+| Correlation (with `--correlation`) | How many correlations were tested and how many have p < 0.05 against chance, the strong ones (\|ρ\| ≥ 0.7), and how to read them |
 | Files, Reproduce | The outputs, and the exact command that made them |
+
+`agent_prompt.md` holds this report too, with instructions for an agent and the notable cohorts of the best-ranked
+events. `splice-assay summarize` turns it into `agent_summary.md`, a short narrative written by Claude Code. That
+narrative is a draft: a number check under it flags numbers it quotes that the results do not print, and HRs not
+printed with their CI, p and q for the event and cohort it names. Read it against this report and the pages.
 
 ### overview.png: every event and cohort at once
 
@@ -183,7 +189,50 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
   The caption names a ridge penalty when those fits have one.
 - **A dot** is p < 0.05 (a large dot p < 0.01); a `*` replaces it when q < 0.05. A frame marks a tumour–normal hit.
   Grey cells were not tested.
-- **Rows** follow the ranking.
+- **Rows** follow the ranking; each event's label has its type's colour, as on the gene maps and the pages.
+- **The last row** (with an expression table) is the host gene's own expression: the HR per SD of expression from
+  Cox on expression + age + sex + stage, a dot for p < 0.05 and a frame for a tumour–normal expression hit
+  (|Δ| > 1). It has no `*`, because expression is not adjusted for multiple testing. A column where the events and
+  the gene's expression share a colour and a dot is one to read on the expression page before crediting the
+  splicing.
+
+### gene_map_GENE.png: where on the gene
+
+![Gene map](reading/09_gene_map.png)
+
+One per gene of the overview's best-ranked events (at most 20), after the overview in `probe.pdf`: the overview's
+results laid out along the gene.
+- **Rows.** The gene first, then its probed events from 5′ to 3′ (the best-ranked 40 at most). The grey number is
+  each event's rank. Each event is drawn as on its page: constant exons grey, the region PSI measures in the event's
+  colour, the junctions of the PSI form arched above and of the other form below.
+- **The gene.** Its collapsed model from the GTF, with nested snoRNAs. Pale columns carry its exons down through
+  the event rows, so you can see which exons each event shares. Long introns are drawn shortened, and so are exons
+  far longer than the gene's typical exon; the header says which. Without a GTF there is no gene model. Events that
+  are not drawn are counted under the title: those observed in under half of every cohort's survival samples
+  (`--min-observed`; in TCGA data often most of a gene's annotated events), and those without usable coordinates.
+- **Cells.** The overview's cells for each row: the HR per SD in each cohort, with the same dot, `*` and frame. The
+  gene's own row holds its expression's HR.
+- **ρ between events** (with `--correlation`): a lower triangle over the event rows. Each cell is the Spearman ρ
+  between two events' PSI, computed in each cohort and summarised by its median over the cohorts; the grey numbers on
+  the diagonal name the columns by rank. A frame marks |ρ| ≥ 0.7. Each event's ρ with the gene's expression is in
+  `correlation.png` and `cells.csv` (`expr_rho`).
+- **Reading it.** Hits that cluster in one part of the gene, or that come from events sharing exons (a column runs
+  through both), may be one change seen several times. The triangle says whether those events also move together.
+
+### correlation.png: what moves together, cohort by cohort (with `--correlation`)
+
+![Probe correlation](reading/10_correlation.png)
+
+- **Gene by gene**, in the order of their best rank: first each event against the gene's expression (by rank), then
+  each pair of its events (the better-ranked event on the left).
+- **Colour and value** are Spearman ρ in the cohort's tumour samples (one per patient, the survival samples): green
+  positive, purple negative. The value is black where p < 0.05 and grey otherwise. A frame marks |ρ| ≥ 0.7, and a
+  grey cell was not tested. With many cohorts the cells are too narrow for values, and a dot marks p < 0.05.
+- **With host-gene expression:** a strong ρ means the event's PSI largely follows the gene's level: its adjusted HR
+  then has a wider CI, and a KM hit could be expression's.
+- **Between events:** a strongly correlated pair counts as one piece of evidence. Two alternative first (or last)
+  exons of a gene sum to 1, so they are near −1 by construction; with more such exons a pair can go either way.
+- `correlations.csv` holds every value with its n, p and q; the gene maps show the median over the cohorts.
 
 ### The tables
 
@@ -192,20 +241,23 @@ These results are not FDR-adjusted. Read them beside the splicing pages:
 | `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `adj_cox_p05_low_power`, `cox_p05`, `cox_p05_low_power`, `km_p05`, `group_hits`, `best_cohort`, `best_model`, `best_hr_per_sd`, `best_p`, `best_low_power`, `protein_change`, `page` |
 | `cells.csv` | event × cohort | `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `cox_notes`), adjusted Cox (`adj_*`) |
 | `expression_cells.csv` | host gene × cohort | the same tests for expression (HR per SD) |
+| `correlations.csv` (with `--correlation`) | pair × cohort | `kind` (expression, event), `event_id`, `partner`, `rho`, `corr_p`, `corr_q`, `corr_n`, `corr_status`; `expr_rho` in `cells.csv`, `best_expr_rho` in `events.csv` |
 | `proteins.csv` | event | the matched transcripts, how they matched, residues, effect and features |
 | `pages/*.csv` | plotted value | every number a page draws or prints, with a `.provenance.json` (input hashes, settings, versions) |
 
 ## A reading order
 
 1. **In `report.md`**, compare the p < 0.05 counts with what chance gives, then read the notes section.
-2. **Open the pages** of the top-ranked events.
-3. **On each page:**
+2. **On the gene map**, see where the hits sit on the gene and whether they come from events that share exons (or,
+   with `--correlation`, that move together).
+3. **Open the pages** of the top-ranked events.
+4. **On each page:**
    - **Details line:** is this the event you meant?
    - **Group view:** is there a tumour–normal change, and does it hold within patients?
    - **KM:** do the curves separate steadily, or do they cross (a †)?
    - **Model:** does the PSI term hold with the clinical terms, and does the header carry notes?
    - **Forest:** do the other cohorts point the same way?
-4. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
+5. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
    cohorts? Where expression is equally prognostic, a splicing association could be an expression echo.
-5. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
+6. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
    and an association that survives adjustment. One small p is not. Everything a probe prints is nominal.

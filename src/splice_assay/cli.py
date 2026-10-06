@@ -34,6 +34,8 @@ def _settings(args) -> Settings:
             s = s.replace(cox_ridge_penalty=args.ridge_penalty)
         if getattr(args, "min_events_per_term", None) is not None:
             s = s.replace(cox_min_events_per_term=args.min_events_per_term)
+        if getattr(args, "min_observed", None) is not None:
+            s = s.replace(min_observed=args.min_observed)
     except ValueError as e:
         raise InputError(str(e)) from None
     if getattr(args, "case_label", None) or getattr(args, "reference_label", None):
@@ -247,6 +249,13 @@ def cmd_panel(args) -> int:
     return 0
 
 
+def cmd_summarize(args) -> int:
+    """An agent's narrative of a probe folder (agent.py)."""
+    from .agent import summarize
+    summarize(args.probe_dir, model=args.agent_model, timeout=args.timeout, dry_run=args.dry_run)
+    return 0
+
+
 def cmd_probe(args) -> int:
     """Every event of a gene (or every event) in every cohort: ranked, one assay page per event."""
     from .dataset import events_table
@@ -269,6 +278,7 @@ def cmd_probe(args) -> int:
     eps = args.endpoint or [None]                          # one probe per endpoint, each in its own folder
     if [str(e).lower() for e in eps] == ["all"]:
         eps = ds.endpoints
+    unsummarized = []                                     # probe folders whose agent summary failed or was skipped
     for ep_arg in eps:
         ep = ep_arg or ("OS" if ds.survival is not None and "OS" in set(ds.survival.endpoint) else None)
         if args.out:
@@ -280,10 +290,10 @@ def cmd_probe(args) -> int:
         res = probe(ds, genes=args.gene, events=args.event, cohorts=args.cohort, endpoint=ep_arg, settings=s,
                     model=base, adjusted=adjusted, baseline=_pairs(args.baseline, "--baseline") or None,
                     gtf=_gtf(args), out_dir=out, top=args.top, max_pages=args.max_pages, proteins=_proteins(args),
-                    gex=not args.no_gex, include_hit=args.include_hit,
+                    gex=not args.no_gex, include_hit=args.include_hit, correlation=args.correlation,
                     call="splice-assay " + " ".join(shlex.quote(a) for a in args._argv))
         for k, v in res.paths.items():
-            print(f"{k}: {v}")
+            print(f"{k}: {', '.join(map(str, v)) if isinstance(v, list) else v}")
         top = res.events[res.events.measurable].head(5) if len(res.events) else res.events
         for r in top.itertuples():
             if r.best_model == "KM":                      # no Cox model could be fitted
@@ -296,6 +306,19 @@ def cmd_probe(args) -> int:
                       f"{low(r.adj_cox_p05_low_power)}, base p<.05 in {r.cox_p05}{low(r.cox_p05_low_power)} of "
                       f"{r.cohorts_cox_tested} cohorts; best {r.best_cohort} HR "
                       f"{getattr(r, f'best_hr_per_{s.psi_hr_unit}'):.2f}" + (" ‡" if r.best_low_power else ""))
+        if args.agent_summary and not unsummarized:      # the narrative, after the deterministic outputs
+            from .agent import summarize
+            try:
+                summarize(out, model=args.agent_model)
+            except InputError as e:                      # the probe stands without it
+                print(f"agent summary not written: {e}", file=sys.stderr)
+                unsummarized.append(str(out))
+        elif args.agent_summary:                         # the same failure would follow
+            unsummarized.append(str(out))
+    if unsummarized:
+        print("The probe's outputs are written. Once that is fixed, `splice-assay summarize PROBE_DIR` writes the "
+              f"summary, for: {', '.join(unsummarized)}", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -689,9 +712,28 @@ def build_parser() -> argparse.ArgumentParser:
     hit_arg(sp)
     sp.add_argument("--no-adjust", action="store_true", help="no adjusted model (default: age + sex + stage found)")
     sp.add_argument("--out", help="output folder (default probe_<gene>_<endpoint>)")
+    sp.add_argument("--correlation", action="store_true",
+                    help="also correlate each event with its host gene's expression and with the other events of its "
+                         "gene, per cohort (Spearman; correlations.csv, correlation.png)")
+    sp.add_argument("--min-observed", type=float, metavar="FRAC",
+                    help="the gene maps and correlations keep events observed in at least FRAC of a cohort's "
+                         "survival samples, in some cohort (setting min_observed; default: coverage_frac, 0.5; "
+                         "0 = all)")
+    sp.add_argument("--agent-summary", action="store_true",
+                    help="then have Claude Code (claude -p, no tools) write a narrative from agent_prompt.md: sends the "
+                         "report and aggregate statistics, no per-patient values (agent_summary.md)")
+    sp.add_argument("--agent-model", help="model for --agent-summary, e.g. opus or sonnet (default: Claude Code's)")
     protein_args(sp)
     gex_args(sp)
     sp.set_defaults(func=cmd_probe)
+
+    sp = sub.add_parser("summarize", help="have Claude Code write a narrative of a probe folder from its "
+                                          "agent_prompt.md (agent_summary.md)")
+    sp.add_argument("probe_dir", help="a probe's output folder (holding agent_prompt.md and report.md)")
+    sp.add_argument("--agent-model", help="model, e.g. opus or sonnet (default: Claude Code's)")
+    sp.add_argument("--timeout", type=float, default=600, help="seconds to wait for the answer (default 600)")
+    sp.add_argument("--dry-run", action="store_true", help="print what would be sent and the command; send nothing")
+    sp.set_defaults(func=cmd_summarize)
 
     sp = sub.add_parser("panels", help="many figures from a spec table (events, cohorts, endpoint[, stem])")
     data_args(sp)

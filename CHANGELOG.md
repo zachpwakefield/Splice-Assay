@@ -1,7 +1,47 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-10-06)
 
+- **Probe overview.** With an expression table, the host gene's own expression has a row of its own below the
+  events: the HR per SD of expression (Cox on expression + the adjusted model's clinical terms), a dot for p < 0.05
+  and a frame for an expression group hit; no q mark, as expression is not adjusted for multiple testing.
+- **Correlation (opt-in).** `probe --correlation` (`correlation=True`) computes Spearman ρ in each cohort's survival
+  samples between each event and its host gene's expression, and between the events of each gene
+  (`correlation.correlations`). It writes `correlations.csv` (ρ, p, BH q within each gene and kind, n, status) and
+  `correlation.png` (after the gene maps in `probe.pdf`), adds `expr_rho` to `cells.csv` and `best_expr_rho` to
+  `events.csv`, and adds a report section that counts the tests against chance and lists |ρ| ≥ 0.7. New settings:
+  `corr_min_n` (20 patients with both values) and `corr_note_above` (0.7).
+- **Gene maps.** The probe draws one map per gene of its best-ranked events (at most 20; `gene_map_GENE.png`, after
+  the overview in `probe.pdf`). It shows the gene's collapsed model (with a GTF) and its probed events, 5′ to 3′ and
+  numbered by rank, drawn as on the pages, with pale columns carrying the gene's exons down through the event rows.
+  Long introns, and exons far longer than the gene's typical exon, are drawn shortened, and the map says so. Each row
+  sits beside its overview cells, the gene's own row holding its expression; with `--correlation`, a lower triangle
+  gives the median ρ over the cohorts between each two events. Events not drawn are counted in the subtitle, and a
+  map that fails is reported without stopping the probe.
+- **Presence filter.** The gene maps and correlations take only events observed in at least half of a cohort's
+  survival samples, in some cohort (`--min-observed FRAC`, setting `min_observed`; by default `coverage_frac`, 0.5,
+  so every measurable event is kept; 0 takes every event). In TCGA, most of a gene's annotated events can be nearly
+  absent (TP53: 40 of 49), and they filled the maps with empty rows. The report says how many were left out.
+- **Probe figures.** The overview's captions wrap to the grid instead of widening the figure, its event labels take
+  their type's colour, and a mark on a dark cell is drawn white where that reads better. The correlation grid goes
+  gene by gene, each gene's expression rows first and then its pairs (the strongest when rows run short), and prints ρ
+  in each cell (black where p < 0.05).
+- **Agent summary (opt-in).** Every probe writes `agent_prompt.md`: instructions for an agent, the rules for
+  reading a probe, the report and the best-ranked events' notable cohorts, with aggregate statistics only.
+  `splice-assay summarize PROBE_DIR` (or `probe --agent-summary`, `--agent-model`) gives it to Claude Code (`claude -p`
+  with no tools, from an empty folder) and writes `agent_summary.md`, marked as machine-written, and
+  `agent_summary.json` (agent, model, date, prompt hash, cost). A number check under the narrative lists the decimal
+  numbers it quotes that the results do not print, and each HR it quotes with a CI that the results do not print
+  with that CI, p and q for the event and cohort (and model, where named) beside them. `--dry-run` shows what would
+  be sent. When the summary fails (Claude Code missing or signed out), the probe's outputs stand and the command exits
+  1. On a Claude subscription a summary counts toward the plan's usage; the recorded cost is an estimate at API
+  prices.
+- **Fixes.**
+  - An event named twice to the probe (`--event X --event X`) is probed once; its cells were counted twice.
+  - The probe report marks a PSI that barely varies with § (it was †, which marks non-proportional hazards
+    everywhere else).
+  - Nested small RNA genes are told apart by gene ID: two of one name, such as SNHG1's two SNORD22 genes, were drawn
+    as one bar spanning both.
 - **Pages.**
   - The length of the event's region ("103 nt") is lifted above a junction arc that would cross it, as when a small
     exon sits next to its flanking exon.

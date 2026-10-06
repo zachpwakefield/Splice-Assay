@@ -103,11 +103,14 @@ splice-assay probe DATA --gene GENE [--gtf annotation.gtf.gz] [--na-value missin
 | `report.md` | Start here: what was run, how many p < 0.05 chance would give, and the ranked events with links to pages ([how to read a page](docs/reading-results.md)) |
 | `events.csv` | One row per event (see below) |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted (`adj_*`), and BH q within each gene |
-| `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot (a `*` instead when q < 0.05), group-hit frame |
+| `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot (a `*` instead when q < 0.05), group-hit frame; the host gene's expression in its own row (with an expression table) |
 | `pages/NNN_EVENT.png` | One assay page per ranked event |
 | `pages/GENE_expression.png` | The host gene's expression page (with an expression table) |
-| `probe.pdf` | The overview, the event pages in rank order, then the expression page |
+| `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model and its probed events observed in enough samples, 5′ to 3′, beside their overview cells (and, with `--correlation`, the median ρ between them) |
+| `probe.pdf` | The overview, the gene maps, the correlation figure (with `--correlation`), the event pages in rank order, then the expression page |
+| `agent_prompt.md` | The probe condensed for an agent: instructions, the rules below, the report and the best-ranked events' notable cohorts. If you are an agent, it is a quick way in; check what it says against `cells.csv` before you report |
 | `expression_cells.csv`, `proteins.csv` | The expression statistics per cohort; the suggested protein changes (with a protein cache) |
+| `correlations.csv`, `correlation.png` | With `--correlation`: Spearman ρ per cohort of each event with its host gene's expression and with the gene's other events |
 
 - **Ranking** (events.csv, in this order; Cox hits in low-power fits, under 20 events, count only as tie-breakers):
   - `measurable`: events with a Cox fit or a log-rank test in at least one cohort come first;
@@ -160,6 +163,19 @@ Use them when judging an event:
 - **Easier to interpret:** a splicing association where expression is not prognostic.
 - **Normals:** they need expression values for the tumour–normal expression view. Without them the view says "no
   normal values".
+- **At a glance:** the overview's last row is the gene's expression (HR per SD, p < 0.05 dot, group-hit frame, no
+  q mark).
+
+### Optional: correlation
+
+`--correlation` adds Spearman ρ per cohort, over the survival samples (one tumour per patient): each event with its
+host gene's expression, and each pair of events of one gene (`correlations.csv`, `correlation.png`, `expr_rho` in
+`cells.csv`, `best_expr_rho` in `events.csv`, a report section listing |ρ| ≥ 0.7).
+- **Event with expression, |ρ| high:** the adjusted HR is what PSI adds beyond expression, with a wider CI; a KM hit
+  may be expression's. Say so when you report such an event.
+- **Two events, |ρ| high:** one isoform change measured twice; count their hits once. Two alternative first (last)
+  exons of one gene sum to 1, so their ρ near −1 is built in, not a finding; with three or more, a pair's ρ is no
+  longer fixed by construction.
 
 ### Optional: protein changes
 
@@ -192,10 +208,13 @@ annotated transcript matched well; nothing is shown then.
 - Few events (a KM or Cox gate note on the page, or ‡: a Cox fit with fewer than 20 events, low power).
 
 **Other checks:**
+- **Where on the gene.** Open the gene map: hits clustered in one part of the gene, or in events that share an exon
+  (one pale column runs through both), may be one change counted several times. The map leaves out events whose PSI
+  is observed in under half of every cohort's survival samples (its subtitle counts them).
 - **Where signal lives.** Open `overview.png`: a whole column of dots means a cohort-wide effect (many events
   associated in one cancer), which is less specific to the event.
 - **Duplicate events.** rMATS often lists the same exon several times with different flanking exons, and their PSI
-  values are correlated. Count them as one piece of evidence, not several.
+  values are correlated. Count them as one piece of evidence, not several (`--correlation` measures it).
 - **Coverage.** Low coverage (`frac_obs` in cells.csv) makes an event noisy even when it passes the gates.
 
 ## Step 4: make the final pages
@@ -286,6 +305,9 @@ splice-assay panel DATA --event EVENT_ID --out OUT [--cohort A --cohort B ...] [
 | Input form | two tables (samples, psi) plus expression | separate tables are also read |
 | HIT-index hit | \|Δ\| > 0.20, no 0/1 check | settings `hit_min_abs_delta` |
 | Expression page | on when expression is given (one per gene, last) | `--no-gex` |
+| Correlation | off | `--correlation` (probe) |
+| Events in gene maps and correlations | observed in at least half of a cohort's survival samples, in some cohort | `--min-observed FRAC` (probe; 0 = all) |
+| Agent summary | off (`agent_prompt.md` is always written) | `--agent-summary` (probe), `splice-assay summarize PROBE_DIR` |
 
 ## Pitfalls
 

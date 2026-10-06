@@ -27,6 +27,14 @@ def test_chromosome_aliases_and_gene_tags(gtf_path):
     assert gene_model(gtf, "SYN1", "7", (103000, 104300)).nested.gene_name.tolist() == ["SNORD900"]
 
 
+def test_nested_genes_of_one_name_stay_apart(gtf_path):
+    gtf = read_gtf(gtf_path, [("chr7", 99000, 107000)])
+    twins = pd.concat([gtf[gtf.feature.eq("gene") & gtf.gene_name.eq("SNORD900")]] * 2, ignore_index=True)
+    twins = twins.assign(gene_id=["G1", "G2"], gene_name="SNORD22", start=[100300, 105600], end=[100380, 105680])
+    m = gene_model(pd.concat([gtf, twins], ignore_index=True), "SYN1", "chr7", (100000, 106000))
+    assert m.nested.gene_name.tolist() == ["SNORD22", "SNORD900", "SNORD22"]   # two genes, not one bar across both
+
+
 def test_missing_gene_gives_none(gtf_path):
     import warnings
     gtf = read_gtf(gtf_path, [("chr7", 99000, 107000)])

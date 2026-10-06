@@ -194,6 +194,7 @@ Every p value for splicing gets a Benjamini–Hochberg q within its gene. Each k
 | All samples | the Mann–Whitney tests of every event × cohort | `unpaired_q` |
 | KM | the log-rank tests of every event × cohort, per endpoint | `km_q` |
 | Cox | the PSI terms of every event × cohort, per endpoint and model | `cox_q` (`adj_cox_q` for the probe's adjusted model) |
+| Correlation (opt-in) | the Spearman tests of every pair × cohort, per kind (with expression; between events) | `corr_q` |
 
 - **What counts.** Only tests that ran (status `tested`) are in a family. `*_q_tests` gives the family size. A family
   of fewer than `fdr_min_family` tests (default 10) gets no q.
@@ -230,6 +231,40 @@ the gene's expression page; the probe's `expression_cells.csv`).
   expression in the fit cohort. Status `constant_expression` when expression does not vary.
 - **Interpretation.** The splicing models already adjust PSI for expression. The expression page shows whether the
   gene's level itself goes with survival or differs between the groups, beside the splicing results.
+- **In the probe overview.** One row per host gene below the events: colour the HR per SD of expression (the Cox
+  model above), a dot for p < α, a frame for a group hit (|Δ median| > `gex_min_abs_delta`), grey when not tested.
+  Each gene map's first row shows the same.
+
+## Correlation (opt-in: `probe --correlation`)
+
+`correlation.correlations` computes Spearman's ρ in each cohort, over its survival samples: one case sample per
+patient, the samples the survival tests draw on. Reference samples are left out, because pooling the two groups
+would add their difference in level to the correlation.
+- **Kinds.** `expression`: an event's values (PSI, or the HIT index) with its host gene's expression (`partner` is the
+  expression gene). `event`: two events of the same gene (`partner` is the other event).
+- **Data.** The patients with both values observed (`corr_n`). They need no survival record or covariates, so `corr_n`
+  can exceed an endpoint's `cox_n`.
+- **Gate.** At least `corr_min_n` (20; at least 3) such patients, and both values varying among them; otherwise the status is
+  `too_few_patients` or `constant`. `no_expression`: the expression table has no row for the host gene.
+- **Test.** ρ is the Pearson correlation of the ranks (ties share their mean rank); p is two-sided, from the t
+  distribution with n − 2 degrees of freedom (`scipy.stats.spearmanr`).
+- **q.** Benjamini–Hochberg within each gene, per kind, over its pairs × cohorts tested (`corr_q`, `corr_q_tests`); a
+  pair involving a HIT index belongs to a family of its own, and a family under `fdr_min_family` gets no q.
+- **Strong.** |ρ| ≥ `corr_note_above` (0.7) is framed in `correlation.png` and listed in the probe report.
+- **Events.** The probe correlates the events observed in at least `min_observed` of a cohort's survival samples in
+  some cohort (`--min-observed`; by default `coverage_frac`, 0.5, the share the survival tests need); the others are
+  left out of the correlations and gene maps.
+- **Gene maps.** Each gene map's triangle shows, for every two of its events, the median ρ over the cohorts where the
+  pair was tested.
+- **In the probe.** `correlations.csv` holds every row. `cells.csv` gets the expression kind as `expr_rho`,
+  `expr_rho_p`, `expr_rho_q` and `expr_rho_n`; `events.csv` gets `best_expr_rho`, ρ in the event's best cohort.
+- **Reading.** With PSI and expression strongly correlated, the base and adjusted models hold two overlapping terms:
+  PSI's HR is its association beyond expression, with a wider CI. As a guide from linear models, the variance of its
+  coefficient grows by 1/(1 − R²), R² of PSI on the model's other terms, so at least about 1/(1 − ρ²) (ρ standing in
+  for the Pearson r). The KM split is not adjusted for expression. Strongly correlated events of one gene usually
+  measure one isoform change. The PSI values of a gene's alternative first (last) exons share its first (last) exon
+  use: two such exons sum to about 1, so their ρ is near −1 by construction; with more of them, pairs tend to be
+  negative but need not be (two minor exons splitting the remainder can rise together).
 
 ## Default clinical adjustment and the probe
 

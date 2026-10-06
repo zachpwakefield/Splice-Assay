@@ -82,6 +82,14 @@ class Settings:
                                       # stands (0 = never)
     time_unit: str = "days"           # unit of survival.time: days, months or years
     days_per_year: float = 365.25
+    # ------------------------------------------------------------------ correlation (opt-in: probe --correlation)
+    corr_min_n: int = 20              # Spearman's rho (an event with its host gene's expression, or two events of a
+                                      # gene, per cohort) needs at least this many patients with both values
+    corr_note_above: float = 0.7      # |rho| at or above this is called strong: a frame in correlation.png, named in
+                                      # the probe report (0 = never)
+    min_observed: float | None = None  # the probe's gene maps and correlations keep the events observed in at least
+                                      # this fraction of a cohort's survival samples, in some cohort (0 = all;
+                                      # default: coverage_frac, the share the tests need)
     # ------------------------------------------------------------------ numerics
     round_decimals: int = 12          # PSI and differences are rounded to this many decimals before comparisons
     # ------------------------------------------------------------------ drawing
@@ -102,9 +110,14 @@ class Settings:
     def __post_init__(self):
         for name in ("min_pairs", "min_group", "min_off_modal", "km_min_group", "km_min_events", "cox_min_n",
                      "cox_min_events", "cox_low_power_events", "round_decimals", "dpi", "gtf_flank", "fdr_min_family",
-                     "level_min_patients", "cohorts_per_page"):
+                     "level_min_patients", "cohorts_per_page", "corr_min_n"):
             if int(getattr(self, name)) != getattr(self, name) or getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be a non-negative integer")
+        if self.corr_min_n < 3:
+            raise ValueError("Settings.corr_min_n must be at least 3")
+        for name in ("corr_note_above", "min_observed"):
+            if getattr(self, name) is not None and not 0 <= getattr(self, name) <= 1:
+                raise ValueError(f"Settings.{name} must lie in [0, 1]")
         for name in ("alpha", "coverage_frac", "gene_model_min_frac", "covariate_min_complete"):
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"Settings.{name} must lie in (0, 1]")
@@ -139,6 +152,12 @@ class Settings:
     def narrow_measure(self) -> str:
         """The spread the narrow-range note checks: narrow_psi_measure, else the HR's unit."""
         return self.narrow_psi_measure or self.psi_hr_unit
+
+    @property
+    def observed_frac(self) -> float:
+        """The share of a cohort's survival samples an event must be observed in for the gene maps and correlations:
+        min_observed, else coverage_frac."""
+        return self.coverage_frac if self.min_observed is None else self.min_observed
 
     def replace(self, **changes) -> "Settings":
         return replace(self, **changes)

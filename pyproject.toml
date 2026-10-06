@@ -42,4 +42,4 @@ splice_assay = ["py.typed"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
-filterwarnings = ["error::FutureWarning:splice_assay"]
+filterwarnings = ["error::FutureWarning:splice_assay", "error::splice_assay.plot.genemap.MapNotDrawn"]

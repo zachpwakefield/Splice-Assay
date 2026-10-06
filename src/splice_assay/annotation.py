@@ -115,7 +115,7 @@ class GeneModel:
     blocks: list            # [(start, end, n_keys)]
     n_transcripts: int
     min_transcripts: float
-    nested: pd.DataFrame    # gene_name, start, end (small RNA genes inside the drawn span)
+    nested: pd.DataFrame    # gene_id, gene_name, start, end (small RNA genes inside the drawn span)
 
 
 def gene_model(gtf: pd.DataFrame, gene: str, chrom: str, span, gene_id: str = "",
@@ -143,7 +143,9 @@ def gene_model(gtf: pd.DataFrame, gene: str, chrom: str, span, gene_id: str = ""
         warnings.warn(f"GTF: gene {rec.gene_name or rec.gene_id} {why}; the gene track is omitted", stacklevel=2)
         return None
     sn = on[on.feature.eq("gene") & on.gene_type.isin(s.nested_biotypes) & (on.start < rec.end) & (on.end > rec.start)]
-    sn = sn.groupby("gene_name", as_index=False).agg(start=("start", "min"), end=("end", "max"))
+    sn = sn.groupby("gene_id", as_index=False).agg(gene_name=("gene_name", "first"), start=("start", "min"),
+                                                   end=("end", "max"))
+    sn["gene_name"] = sn.gene_name.where(sn.gene_name.fillna("").astype(str).ne(""), sn.gene_id)
     lo, hi = blocks[0][0], blocks[-1][1]
     sn = sn[(sn.end > lo) & (sn.start < hi)].sort_values("start").reset_index(drop=True)
     return GeneModel(gene=rec.gene_name or gene, chrom=chrom, strand=rec.strand, blocks=blocks, n_transcripts=ntx,

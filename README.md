@@ -12,6 +12,11 @@ curves, a forest of every cohort, and optionally the full Cox model of each coho
 per event. With expression data, the host gene's own expression gets a page of its own, drawn once per gene after
 its splicing pages, with the same views (tumour vs normal, KM, Cox on expression + clinical).
 
+When you are not sure where to look, `probe` runs every event of a gene in every cohort and ranks them. It draws an
+overview of events × cohorts and a map of each gene with its events, can add how events move together and with their
+gene's expression (`--correlation`), and writes a prompt from which an agent can draft a short narrative of the
+results (`summarize`).
+
 Events can be rMATS types (SE, RI, A3SS, A5SS, MXE) or HITindex's alternative first and last exons and HIT index
 (AFE, ALE, HIT).
 
@@ -84,6 +89,8 @@ export SPLICE_ASSAY_PROTEINS=demo/proteins     # optional: the suggested protein
 splice-assay probe demo/data --gene SYN1       # -> probe_SYN1_OS/report.md, probe.pdf, pages/
 splice-assay probe demo/data --gene SYN3       # HITindex events: alternative first/last exons (AFE, ALE)
 splice-assay probe demo/data --gene SYN3 --include-hit   # ... and the HIT index of each exon (left out by default)
+splice-assay probe demo/data --gene SYN1 --correlation   # ... and how its events move together and with expression
+splice-assay summarize probe_SYN1_OS           # optional: a narrative drafted by Claude Code (see Agent summary)
 
 # one event: the most promising cohorts, OS, and models adjusted for age + sex + stage are the defaults
 splice-assay panel demo/data --event SYN1:SE:1 --out figures/
@@ -288,8 +295,11 @@ It writes:
 | `report.md` | What was run, how many p < 0.05 chance would give, and the ranked events with links to their pages |
 | `events.csv` | One row per event, ranked: significant cohorts (adjusted, base, with directions), group hits, best cohort |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted, with BH q values within each gene |
-| `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame |
-| `pages/`, `probe.pdf` | One assay page per ranked event, then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF |
+| `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame; with an expression table, the host gene's own expression in a row of its own |
+| `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model (with `--gtf`) and its probed events observed in enough samples, 5′ to 3′, each beside its cells of the overview; with `--correlation`, the median ρ between its events |
+| `pages/`, `probe.pdf` | One assay page per ranked event, then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF, after the overview and the gene maps (and the correlation figure) |
+| `correlations.csv`, `correlation.png` | With `--correlation`: Spearman ρ per cohort of each event with its host gene's expression and with the gene's other events (see Correlation below) |
+| `agent_prompt.md` | What an agent needs to write a narrative of the probe: instructions, the rules for reading it, the report and the best-ranked events' notable cohorts (see Agent summary below) |
 
 Events measurable in at least one cohort come first. The ranking then orders events by these criteria in turn, with
 Cox counted only in fits that are not low power (at least 20 events):
@@ -307,6 +317,14 @@ each by adjusted Cox p.
 
 More than 6 cohorts are split over balanced pages (`_p1`, `_p2`, …, "page 1 of 3" in the title), each with the
 full forest. Change the split with the `cohorts_per_page` setting (0 = one page).
+
+**Gene maps** show where on the gene the signal sits. Each event is drawn as on its page, 5′ to 3′ under the gene's
+collapsed model, with pale columns carrying the gene's exons down through the rows, so events that share an exon line
+up. Long introns are drawn shortened. Beside each row are its overview cells, and with `--correlation` a triangle gives
+the median ρ between each two events. Events observed in under half of every cohort's survival samples are not drawn
+(`--min-observed FRAC`; in TCGA data most of a gene's annotated events can be nearly absent); the subtitle counts them.
+
+![Gene map](https://raw.githubusercontent.com/zachpwakefield/Splice-Assay/main/docs/reading/09_gene_map.png)
 
 A probe ranks candidates; it does not test a hypothesis.
 
@@ -346,6 +364,9 @@ annotation, and checks against SpliceImpactR.
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
 | Expression page | one per gene, after its splicing pages, when an expression table is given | `--no-gex` |
+| Correlation (probe) | off | `--correlation` |
+| Events in the gene maps and correlations (probe) | observed in at least `coverage_frac` (half) of a cohort's survival samples, in some cohort | `--min-observed FRAC` (0 = all) |
+| Agent summary (probe) | off (`agent_prompt.md` is always written) | `--agent-summary`, or `splice-assay summarize PROBE_DIR` |
 
 **How age, sex and stage are found.**
 - **Names.** Columns named like `age`, `age_at_diagnosis`, `sex`, `gender`, `stage` or `ajcc_pathologic_stage` are
@@ -457,6 +478,59 @@ models already adjust PSI for expression.
 - **`--no-gex`** leaves it out.
 - **Matching.** Expression comes from the expression table, matched by the event's `gene` (or `expression_gene`).
   Normals need values too for the case-vs-reference view.
+- **In the probe overview.** Below the events, one row per host gene: the HR per SD of expression (Cox on expression
+  + the adjusted model's clinical terms), a dot for p < 0.05 and a frame for an expression group hit. No q mark,
+  because expression is not adjusted for multiple testing.
+
+## Correlation (optional)
+
+`splice-assay probe ... --correlation` (`probe(..., correlation=True)`) adds Spearman correlations, computed in each
+cohort over its survival samples (one tumour per patient, the samples the survival tests draw on):
+- **each event with its host gene's expression.** A strong correlation means PSI and expression carry overlapping
+  information. The Cox models adjust PSI for expression, so PSI's HR there is what it adds beyond expression,
+  estimated less precisely; the KM split is not adjusted, so a KM hit of such an event could be expression's.
+- **each pair of events of one gene.** Strongly correlated events (often the same exon listed with different
+  flanking exons) are one piece of evidence, not several. Two alternative first (or last) exons of a gene share
+  its first (last) exon use and sum to 1, so their ρ is near −1 by construction.
+
+It writes `correlations.csv` (one row per pair × cohort: `rho`, `corr_p`, `corr_q`, `corr_n`, `corr_status`) and
+`correlation.png` (each cohort's ρ, gene by gene, after the gene maps in `probe.pdf`), adds the median over the
+cohorts of each pair of events as a triangle to each gene map, adds `expr_rho` to `cells.csv` and `best_expr_rho` (ρ in
+the best cohort) to `events.csv`, and summarises the strong pairs (|ρ| ≥ 0.7, `corr_note_above`) in the report. A pair
+needs 20 patients with both values (`corr_min_n`). q values are Benjamini–Hochberg within each gene and kind. Events
+observed in under half of every cohort's survival samples are left out, as they are from the gene maps
+(`--min-observed`). In Python, `splice_assay.correlation.correlations(ds, events=...)` returns the table on its own.
+
+## Agent summary (optional)
+
+Every probe writes `agent_prompt.md`: instructions for an agent, the rules for reading a probe and what not to claim
+(as in the agent guide), the report, and the notable cohorts of the best-ranked events. It holds aggregate statistics
+only, never the pages' per-patient values or your tables.
+
+`splice-assay summarize PROBE_DIR`, or `probe ... --agent-summary`, gives it to Claude Code (`claude -p`, with no
+tools, run from an empty folder) and writes:
+- `agent_summary.md`: a short narrative (bottom line, candidates, caveats, next checks), marked as machine-written.
+  Below it, a number check lists the decimal numbers the narrative quotes that the results do not print, and each HR
+  quoted with a CI that the results do not print with that CI, p and q for the event and cohort (and model, where
+  named) beside it. Whole numbers are not checked.
+- `agent_summary.json`: the agent, the model, the date, a hash of the prompt, and the cost Claude Code reports.
+
+Before you use it:
+- **What is sent.** The prompt goes to Anthropic through your Claude Code login. Results from controlled-access data
+  (TCGA clinical data, for example) may fall under a data use agreement: check it first. `--dry-run` shows what would
+  be sent, and to which command.
+- **It is a draft.** Read it against `report.md` and the pages. Its wording differs from run to run; the probe's other
+  outputs are unchanged.
+- **Setup.** Install Claude Code and sign in once (`claude`, then `/login`), or set `ANTHROPIC_API_KEY`.
+  `--agent-model opus` (or `sonnet`) picks the model; by default Claude Code's own is used. Your own Claude Code
+  settings (`~/.claude/CLAUDE.md`, hooks, output style) still apply and can change the summary's style. If the
+  summary fails, the probe's outputs stand; `splice-assay summarize PROBE_DIR` tries again.
+- **Cost.** Signed in with a Claude subscription, a summary counts toward the plan's usage limits and is not charged
+  separately; the cost in `agent_summary.json` is Claude Code's estimate at API prices. With `ANTHROPIC_API_KEY`
+  set, Claude Code may use the key instead, which is billed per token (`claude`, then `/status`, shows which). A
+  summary is a small task: `--agent-model sonnet` uses less of a plan than Opus.
+- **Other agents.** Any agent can be given `agent_prompt.md` by hand, without access to the probe's folder: the pages'
+  CSV files hold per-patient values.
 
 ## Outputs
 

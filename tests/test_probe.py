@@ -62,7 +62,8 @@ def test_probe_outputs(ds, gtf_path, tmp_path):
     logged = []
     res = probe(ds, genes=["SYN1"], settings=FAST, gtf=gtf_path, out_dir=tmp_path, top=2, log=logged.append)
     drawn = [x.strip().split(":")[0] for x in logged if x.startswith("  ")]  # the PDF's pages after the overview
-    assert drawn == ["page 1", "page 2", "page 3", "expression page"]         # the expression page last
+    assert drawn == ["gene map", "page 1", "page 2", "page 3", "expression page"]   # the expression page last
+    assert res.paths["gene_maps"] == tmp_path / "gene_map_SYN1.png" and res.paths["gene_maps"].exists()
     ev = res.events
     assert list(ev["rank"]) == [1, 2, 3] and set(ev.event_id) == {"SYN1:SE:1", "SYN1:A3SS:1", "SYN1:RI:1"}
     assert ev.adj_cox_p05.is_monotonic_decreasing or ev.iloc[0].adj_cox_p05 >= ev.iloc[1].adj_cox_p05
