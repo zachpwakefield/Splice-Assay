@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- **Pages.**
+  - The length of the event's region ("103 nt") is lifted above a junction arc that would cross it, as when a small
+    exon sits next to its flanking exon.
+  - Protein band: an event that encodes no residue (in a UTR, or holding only the stop codon) is marked by a
+    triangle before residue 1 or after the last residue, with its own legend entry; "Event residues" is listed only
+    when residues are drawn.
+
 ## 0.2.0 (2026-10-04)
 
 - **Naming.** `analyze` is the command and the Python function (`sa.analyze`, `analyze_expression`); the

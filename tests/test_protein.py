@@ -204,6 +204,29 @@ def test_the_stop_codon_follows_the_last_coding_nucleotide():
     assert eff["kind"] == "end" and "holds the stop codon of T1 (after residue 50)" in eff["text"]
 
 
+def test_the_band_marks_an_event_outside_the_coding_sequence():
+    """No residue of the event to draw (a UTR, or only the stop codon): a triangle after the last residue with its own
+    legend entry, and no 'Event residues' entry."""
+    from matplotlib.figure import Figure
+    from splice_assay.plot import protein as PB
+    from splice_assay.protein import Check, ProteinChange, _effect, _isoform
+    cache, tx = _one_transcript()
+    chk = Check(True, "eligible", "splice_site_only", (1,))
+    for region, where, text in (((321, 400), "3′ UTR", "Event: in the 3′ UTR, after the last residue"),
+                                ((301, 400), "stop codon", "Event: holds the stop codon, after the last residue")):
+        iso = _isoform(cache, tx, "INC", chk, [region], "+")
+        pc = ProteinChange("E", "inclusion_only", "SE", inc=iso, shown=[iso])
+        pc.effect = _effect(pc, _event("SYN1:SE:1")[1])
+        band = PB.prepare(pc, 7.2, "#3060a0")
+        legend = [it for line in band["legend"] for it in line]
+        assert ("utr", text) in legend and "event" not in {k for k, _ in legend}
+        rows = []
+        PB.draw(Figure(figsize=(7.2, band["height"] + 0.2)), 7.2, band["height"] + 0.2, 0.1, band, rows)
+        assert [r for r in rows if r.get("what") == "event_outside"] == [
+            dict(panel="protein", what="event_outside", event_id="E", isoform="T1", value=where, position=50.5)]
+        assert not [r for r in rows if r.get("what") == "event_residues"]
+
+
 def test_identical_proteins_from_coding_exons_are_not_called_utr():
     from splice_assay.protein import Isoform, Match, ProteinChange, _effect
     iso = (lambda form, t: Isoform(form, t, t, "protein_coding", 1, "junction_chain", True, "MKVLAAGIVG", [(4, 6)],

@@ -45,7 +45,9 @@ three cohorts:
   annotation, never a measurement.
 - **The bars** are the two forms' proteins on one residue axis.
   - Domains and repeats are boxes, disordered regions grey lines, and short motifs pins.
-  - The event's residues are highlighted, and the triangle marks where the other form's region sits.
+  - The event's residues are highlighted, and the triangle marks where the other form's region sits. An event that
+    encodes no residue gets a triangle before residue 1 (5′ UTR) or after the last residue (3′ UTR, or only the stop
+    codon).
 - **No band** means no protein cache was given ([getting one](annotation-cache.md)), or no annotated transcript
   matches the event.
 

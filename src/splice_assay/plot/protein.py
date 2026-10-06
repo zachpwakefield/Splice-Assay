@@ -8,8 +8,10 @@ backbone is a thin rounded bar. The features drawn are:
   - transmembrane helices and signal peptides: small dark boxes;
   - ELM motifs: lollipops above the backbone.
 The event's own residues are drawn as in the schematic: the backbone in the event colour, a tint over the domains it
-touches and a bracket with the residue numbers. On an isoform that lacks the region, a triangle marks where it would sit. Above the rows,
-one sentence says what the event does. The band is drawn only when there is a suggestion (protein.ProteinChange.ok).
+touches and a bracket with the residue numbers. On an isoform that lacks the region, a triangle marks where it would
+sit; an event that encodes no residue gets a triangle before residue 1 (in the 5' UTR) or after the last residue (in
+the 3' UTR, or holding only the stop codon). Above the rows, one sentence says what the event does. The band is drawn
+only when there is a suggestion (protein.ProteinChange.ok).
 """
 from __future__ import annotations
 
@@ -73,7 +75,11 @@ def prepare(pc, W: float, color: str, label: str = "") -> dict | None:
     legend = [("dom", n) for n in unnamed]
     legend += [(k, t) for k, t in (("mobidblite", "Disordered"), ("tmhmm", "Transmembrane helix"),
                                    ("signalp", "Signal peptide"), ("elm", "ELM motif")) if k in kinds]
-    legend.append(("event", "Event residues"))
+    if any(i.event_aa for i in isos):
+        legend.append(("event", "Event residues"))
+    where = next((_outside(i) for i in isos if _outside(i)), "")
+    if where:
+        legend.append(("utr", OUTSIDE[where]))
     if any(i.insert_after for i in isos):
         legend.append(("insert", "Where the other form's region sits"))
     leg_lines, cur, x = [], [], 0.12
@@ -88,6 +94,18 @@ def prepare(pc, W: float, color: str, label: str = "") -> dict | None:
     h = HEAD_PAD + LINE_H * (1 + len(lines)) + 0.04 + ROW_H * len(isos) + AXIS_H + LINE_H * len(leg_lines) + 0.04
     return dict(pc=pc, isos=isos, label=label, lines=lines, doms=doms, colors=colors, legend=leg_lines,
                 n_max=n_max, color=color, height=h)
+
+
+OUTSIDE = {"5′ UTR": "Event: in the 5′ UTR, before residue 1", "3′ UTR": "Event: in the 3′ UTR, after the last residue",
+           "stop codon": "Event: holds the stop codon, after the last residue"}
+
+
+def _outside(iso) -> str:
+    """Where the event sits when it encodes none of this isoform's residues (and has no insertion point): '5′ UTR',
+    '3′ UTR' or 'stop codon'; '' otherwise."""
+    if iso.event_aa or iso.insert_after:
+        return ""
+    return iso.utr or ("stop codon" if iso.codon == "stop codon" else "")
 
 
 def _rbox(ax, x0, x1, yc, h, xpi, ypi, r_in=0.025, **kw):
@@ -179,6 +197,13 @@ def draw(fig, W: float, H: float, y0: float, band: dict, rows: list) -> None:
                                zorder=6))
             rows.append(dict(panel="protein", what="insert_after", event_id=pc.event_id, isoform=iso.transcript,
                              value=iso.insert_after))
+        where = _outside(iso)
+        if where:                                            # before residue 1 (5' UTR) or after the last residue
+            xu = 0.5 if where == "5′ UTR" else L + 0.5
+            ax.add_line(Line2D([xu], [yc - (DOM_H / 2 + 0.05) * ypi], marker="v", ms=3.4, ls="", color=color,
+                               zorder=6))
+            rows.append(dict(panel="protein", what="event_outside", event_id=pc.event_id, isoform=iso.transcript,
+                             value=where, position=xu))
         rows.append(dict(panel="protein", what="isoform", event_id=pc.event_id, isoform=iso.transcript,
                          label=iso.name, form=iso.form, value=L, biotype=iso.biotype, tsl=iso.tsl,
                          match_context=iso.context, source="annotation"))
@@ -206,7 +231,7 @@ def draw(fig, W: float, H: float, y0: float, band: dict, rows: list) -> None:
                                          lw=0))
                 fig.add_artist(Line2D([fx(x), fx(x + 0.16)], [yy, yy], lw=BONE_W, color=color,
                                       solid_capstyle="butt"))
-            elif kind == "insert":
+            elif kind in ("insert", "utr"):
                 fig.add_artist(Line2D([fx(x + 0.08)], [yy], marker="v", ms=3.4, ls="", color=color))
             fig.text(fx(x + 0.21), yy, text, fontsize=5.8, color=S.INK2, ha="left", va="center")
             x += 0.21 + S.text_width(text, 5.8) + 0.18

@@ -35,7 +35,7 @@ sa.event_panel(ds, "FNBP1:SE:0020", ["LUAD"], "OS", proteins=cache, out_dir="fig
 
 | Where | What |
 |---|---|
-| Page band | One bar per protein-coding form on one residue axis, with the event's residues outlined. Shown: named InterPro domains (one of each set of overlapping entries), disordered regions, TM helices, signal peptides and ELM motifs. A triangle marks where an absent region would sit. |
+| Page band | One bar per protein-coding form on one residue axis, with the event's residues outlined. Shown: named InterPro domains (one of each set of overlapping entries), disordered regions, TM helices, signal peptides and ELM motifs. A triangle marks where an absent region would sit, or, for an event that encodes no residue, sits before residue 1 (5′ UTR) or after the last residue (3′ UTR, or only the stop codon). |
 | `proteins.csv` (probe), `proteins --out` | One row per event: the status, both transcripts (name, biotype, TSL, how they matched), protein lengths, event residues, the effect and the features. |
 | `events.csv` (probe) | `protein_status`, `protein_change` (a short label such as `+61 aa, in frame`), `protein_summary`. |
 | Page CSV | Rows with `panel = protein`: every drawn isoform, domain, event span and the effect text. |

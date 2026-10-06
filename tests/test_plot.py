@@ -201,6 +201,25 @@ def test_km_header_notes_non_proportional_hazards():
         assert any("non-proportional hazards (p 0.003)" in x.get_text() for x in ax.texts) == shown
 
 
+def test_the_length_label_clears_the_junction_arcs():
+    """A small exon close to its downstream exon: the short arc rises where the label sits, so the label is lifted
+    above it; between long arcs it stays where it was."""
+    from matplotlib.figure import Figure
+    from splice_assay.events import geometry
+    from splice_assay.plot import schematic as SC
+
+    def label_y(variable):
+        g = geometry("E", dict(event_type="SE", constant="1000-1100;10000-10100", variable=variable))
+        fig = Figure(figsize=(7.2, 1.0))
+        ax = fig.add_axes([0.15, 0.1, 0.8, 0.8])
+        SC.draw(ax, fig, [dict(event_id="E", label="SE:1", geometry=g)], "chr1", "+", None, [])
+        return next(t.get_position()[1] for t in ax.texts if t.get_text() == "100 nt")
+    row = SC.FIRST_ROW[False]
+    assert label_y("5000-5100") == pytest.approx(row - 0.12)              # long arcs on both sides: unchanged
+    near = label_y("9300-9400")                                           # the arc 9400-10000 rises under it
+    assert row - 0.07 - 0.075 - 0.015 - 1e-9 <= near < row - 0.12          # lifted, no higher than the arc's apex
+
+
 def test_km_end_labels_stay_apart_when_the_curves_end_level():
     """Both arms reach 0 (every patient died): the two labels are still nudged apart, not drawn on each other."""
     from matplotlib.figure import Figure

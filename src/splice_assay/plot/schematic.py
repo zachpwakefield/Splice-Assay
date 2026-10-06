@@ -4,6 +4,7 @@ Minus-strand genes are drawn 5' to 3' (coordinates decrease left to right). A ge
 drawn only around them (a window), with marks where it continues. On each event row the constant exons are
 grey, the region PSI measures is coloured by event type (for MXE the other exon is outlined), the arcs above the row
 are the junctions of the form PSI counts and the arc below is the other form. Regions shorter than 25 nt get a caret.
+The region's length is written above it, lifted above a junction arc that would cross the label.
 """
 from __future__ import annotations
 
@@ -28,6 +29,21 @@ def arc(ax, x0, x1, y, h, **kw):
     """Junction arc from x0 to x1 at baseline y with apex h (data units; y grows downwards)."""
     verts = [(x0, y), ((x0 + x1) / 2, y - 2 * h), (x1, y)]
     ax.add_patch(PathPatch(MPath(verts, [MPath.MOVETO, MPath.CURVE3, MPath.CURVE3]), fill=False, **kw))
+
+
+def arc_rise(arcs, lo: float, hi: float, h: float) -> float:
+    """How far the junction arcs (apex h) rise above their baseline anywhere over [lo, hi] (data units): an arc from
+    a to b rises 4 h t (1 - t) at t = (x - a) / (b - a)."""
+    top = 0.0
+    for a, b in arcs:
+        a, b = min(a, b), max(a, b)
+        s, e = max(lo, a), min(hi, b)
+        if s >= e:
+            continue
+        m = (a + b) / 2
+        t = ((m if s <= m <= e else (e if e < m else s)) - a) / (b - a)
+        top = max(top, 4 * h * t * (1 - t))
+    return top
 
 
 def box(ax, x0, x1, yc, h, **kw):
@@ -143,8 +159,12 @@ def draw(ax, fig, events, chrom: str, strand: str, model, rows: list, nested_lab
             arc(ax, a, b, y + 0.07, -0.075, edgecolor=S.EXON_LINE, lw=0.8, zorder=2)
         vlen = g.variable_length
         vc = np.mean([(a + b) / 2 for a, b in g.variable])
-        ax.text(vc, y - 0.12 - (0.03 if vlen < TINY else 0), f"{vlen} nt", ha="center", va="bottom", fontsize=5.8,
-                color=col)
+        text, ly = f"{vlen} nt", y - 0.12 - (0.03 if vlen < TINY else 0)          # ly: the label's bottom
+        half = S.text_width(text, 5.8) / 2 * (x1 - x0) / (ax.get_position().width * fig.get_figwidth())
+        top = y - 0.07 - arc_rise(g.psi_arcs, vc - half, vc + half, 0.075)        # the arcs' top under the label
+        if top < ly + 0.015:                             # a junction arc rises into (or up to) the label: lift it
+            ly = top - 0.015
+        ax.text(vc, ly, text, ha="center", va="bottom", fontsize=5.8, color=col)
         ax.text(-0.005, y - 0.045, ev["label"], transform=lab, ha="right", va="center", fontsize=6.6, color=col,
                 fontweight="bold")
         ax.text(-0.005, y + 0.085, PSI_MEANING.get(g.event_type, "PSI"), transform=lab, ha="right", va="center",
