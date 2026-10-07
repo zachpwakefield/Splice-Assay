@@ -116,6 +116,33 @@ def _medians(corr: pd.DataFrame | None, ids: list) -> dict:
     return pairs
 
 
+def _structure_key(geoms, has_model: bool) -> list:
+    """The key's items for the drawing of the gene and its events, as the pages' legend shows them."""
+    from matplotlib.patches import Rectangle
+    types = list(dict.fromkeys(g.event_type for g in geoms))
+    col = S.TYPE_COLOR.get(types[0], S.TYPE_DEFAULT) if types else S.TYPE_DEFAULT
+    t = np.linspace(0, 1, 30)
+
+    def box(colour):
+        return lambda ax: ax.add_patch(Rectangle((0.05, 0.28), 0.9, 0.44, facecolor=colour, lw=0))
+
+    def curve(up, colour):
+        return lambda ax: ax.plot(0.05 + 0.9 * t, (0.85 - 0.7 * 4 * t * (1 - t)) if up else
+                                  (0.15 + 0.7 * 4 * t * (1 - t)), color=colour, lw=0.7)
+    qty = " or ".join(dict.fromkeys(quantity(x) for x in types)) or "PSI"
+    items = [(dict(face=None, draw=box(S.EXON)), "exon"),
+             (dict(face=None, draw=box(col)), f"region measured by {qty}" + (" (colour: event type)" if len(types) > 1
+                                                                            else ""))]
+    if any(g.psi_arcs or g.other_arcs for g in geoms):
+        items += [(dict(face=None, draw=curve(True, col)), "junction of the PSI form"),
+                  (dict(face=None, draw=curve(False, S.EXON_LINE)), "junction of the other form")]
+    if has_model:                                        # an exon of the gene, its column carried down the rows
+        items.append((dict(face=None, draw=lambda ax: (
+            ax.add_patch(Rectangle((0.3, 0.0), 0.4, 1.0, facecolor=EXON_BAND, edgecolor=S.GRID, lw=0.4)),
+            ax.add_patch(Rectangle((0.3, 0.0), 0.4, 0.3, facecolor=S.EXON, lw=0)))), "the gene's exon, down the rows"))
+    return items
+
+
 def _not_drawn(left: dict, s: Settings) -> str:
     """' · 2 events not drawn (no coordinates, another chromosome)' or ''."""
     why = {"rarely observed": f"observed in under {s.observed_frac:.0%} of every cohort's survival samples",
@@ -231,20 +258,22 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
     y_end = y_ev + PITCH * n
     caption = (f"Rows: the gene and its probed events, 5′ to 3′, numbered by probe rank"
                + (f" (the best-ranked {n} of {n + left['beyond']})" if left["beyond"] else "")
-               + ("; pale columns: the gene's exons (the GTF's transcripts collapsed)" if model is not None else
+               + ("; the gene's exons: its GTF transcripts collapsed" if model is not None else
                   "; no gene model (no GTF, or the gene is not in it)")
                + (f"; {scale_note}" if scale_note else "")
                + f"; cells: Cox HR per {U} of {v} per cohort ({fit_note or 'adjusted model where fitted'})"
                + (f"; the gene's row: HR per SD of {'its' if host == gene else host} expression (Cox on "
                   f"{gex_model or 'expression'}), no q" if gx is not None else "")
-               + f"; dot: p < {s.alpha:g} (large: < 0.01)"
-               + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
-               + "; frame: group hit; grey: not tested"
                + (f"; ρ between events: Spearman correlation of two events' {v} in each cohort's survival samples, "
-                  "median over the cohorts (each cohort in correlation.png)"
-                  + (f"; frame: |ρ| ≥ {s.corr_note_above:g}" if s.corr_note_above > 0 else "") if items else ""))
+                  "median over the cohorts (each cohort in correlation.png)" if items else ""))
     cap = G.clauses(caption, W - 0.24, 5.6)
-    H = y_end + 0.62 + 0.115 * len(cap) + 0.08
+    rho_hit = [(dict(face=G.rho_scale()[0](G.rho_scale()[1](0.8)), frame=True, value=(".80", S.INK)),
+                f"|ρ| ≥ {s.corr_note_above:g}")] if items and s.corr_note_above > 0 else []
+    keys = _structure_key(geoms, model is not None) + [None] + G.hr_key(s, extra=rho_hit)
+    key_w = x_strip - 0.34 - 0.12                            # under the gene and its events
+    key_h = len(G.key_rows(keys, key_w)) * G.KEY_ROW
+    y_cap = y_end + max(0.62, 0.22 + key_h + 0.10)
+    H = y_cap + 0.115 * len(cap) + 0.08
     hr_scale, rho_scale = G.hr_scale(), G.rho_scale()
     with matplotlib.rc_context(S.rc()):
         fig = Figure(figsize=(W, H))
@@ -346,7 +375,6 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
             fig.text(fx(x_lab), fy(yc[e] + 0.075), PSI_MEANING.get(g.event_type, "PSI"), fontsize=5.6,
                      color=S.INK2, va="center")
         # ---------------------------------------------------------------- survival cells
-        cmap, norm = hr_scale
         ax = axes(x_strip, nc * cw, y0)
         ax.set_xlim(0, nc)
         fig.text(fx(x_strip), fy(head_y), strip_head, fontsize=6.2, fontweight="bold", va="center")
@@ -354,9 +382,12 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
             ax.text(j + 0.5, y0 - 0.04, c, rotation=90, ha="center", va="bottom", fontsize=5.6, color=S.INK2,
                     clip_on=False)
 
-        def cell(j, y, tested, hr, p, q, hit):
-            face = cmap(norm(np.log2(hr))) if tested and np.isfinite(hr) else G.UNTESTED
-            ax.add_patch(Rectangle((j + 0.05, y - CELL_H / 2), 0.9, CELL_H, facecolor=face, lw=0))
+        def cell(j, y, tested, hr, p, q, pale, hit):
+            face = G.hr_face(hr, tested, pale, hr_scale)
+            rect = Rectangle((j + 0.05, y - CELL_H / 2), 0.9, CELL_H, facecolor=face, lw=0)
+            ax.add_patch(rect)
+            if pale:
+                G.hatch(ax, rect)
             if hit:
                 ax.add_patch(Rectangle((j + 0.05, y - CELL_H / 2), 0.9, CELL_H, fill=False, edgecolor=S.INK,
                                        lw=0.7))
@@ -368,15 +399,18 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
         for j, c in enumerate(cohorts):
             if gx is not None and c in gx.index:
                 x = gx.loc[c]
-                cell(j, yg, x.get("cox_status") == "tested", x.get("hr_per_sd", np.nan), x.get("cox_p", np.nan),
-                     np.nan, G.flag(x.get("group_hit")))
+                tested = x.get("cox_status") == "tested"
+                cell(j, yg, tested, x.get("hr_per_sd", np.nan), x.get("cox_p", np.nan), np.nan,
+                     tested and G.imprecise(x.get("ci_low_sd"), x.get("ci_high_sd"), x.get("cox_low_power"), s),
+                     G.flag(x.get("group_hit")))
             for e in ids:
                 if (e, c) in idx.index:
                     x = idx.loc[(e, c)]
                     cell(j, yc[e], *G.shown_fit(x, s), G.flag(x.get("group_hit")))
-        G.colorbar(fig, x_strip, y_end + 0.20, min(1.4, max(nc * cw, 0.9)), W, H, hr_scale, [-1, 0, 1],
-                   ["0.5", "1", "2"], f"HR per {U}" + (" (expression: per SD)" if gx is not None and U != "SD"
-                                                       else ""))
+        G.colorbar(fig, x_strip, y_end + 0.24, min(1.6, strip_w), W, H, hr_scale, *G.HR_TICKS,
+                   f"HR per {U} of {v}" + (" (expression: per SD)" if gx is not None and U != "SD" else ""),
+                   ends=G.HR_ENDS)
+        G.key(fig, 0.12, y_end + 0.22, key_w, W, H, keys)
         # ---------------------------------------------------------------- correlation triangle
         if items:
             cmap_r, norm_r = rho_scale
@@ -400,8 +434,8 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
                     if ok and show:
                         ax.text(j + 0.5, y, G.rho_text(r), ha="center", va="center", fontsize=4.9,
                                 color=G.ink_on(face))
-            G.colorbar(fig, x_mat, y_end + 0.20, min(1.4, max(len(items) * mw, 0.9)), W, H, rho_scale,
+            G.colorbar(fig, x_mat, y_end + 0.24, min(1.4, max(len(items) * mw, 0.9)), W, H, rho_scale,
                        [-1, 0, 1], ["−1", "0", "1"], "Spearman ρ")
         for k, line in enumerate(cap):
-            fig.text(fx(0.12), fy(y_end + 0.62 + 0.115 * k), line, fontsize=5.6, color=S.INK2, va="top")
+            fig.text(fx(0.12), fy(y_cap + 0.115 * k), line, fontsize=5.6, color=S.INK2, va="top")
     return fig

@@ -360,6 +360,25 @@ def test_the_report_says_what_changed_settings_mean(ds, tmp_path):
                                  if x.get_text().startswith("colour:")))
     s = FAST.replace(cox_ridge="clinical")
     assert "(adjusted model where fitted; ridge λ 1 on clinical terms)" in caption(run(s), s)
+    r = run(FAST)                                        # the counts at the right of each row
+    fig = overview(r.cells, r.events, "OS", FAST)
+    def rows(f):
+        by = {}
+        for t in f.axes[0].texts:
+            by.setdefault(t.get_position()[1], []).append(t.get_text())
+        return by
+    by_row = rows(fig)
+    assert by_row[-0.25] == ["p < 0.05", "chance", "HR"]
+    for i, e in enumerate(r.events[r.events.measurable].itertuples()):        # each row: k/n, chance, directions
+        c = r.cells[r.cells.event_id.eq(e.event_id)]
+        adj = c.adj_cox_status.eq("tested")
+        p = c.adj_cox_p.where(adj, c.cox_p.where(c.cox_status.eq("tested")))
+        hr = c.adj_hr_per_sd.where(adj, c.hr_per_sd)[p < 0.05]
+        k, m = int((p < 0.05).sum()), int(p.notna().sum())
+        assert by_row[i + 0.5] == [f"{k}/{m}", f"{0.05 * m:.1f}", f"{(hr > 1).sum()}↑ {(hr < 1).sum()}↓" if k else ""]
+    strict = overview(r.cells, r.events, "OS", FAST.replace(alpha=0.001))
+    assert "(0.1% of them)" in " ".join(t.get_text() for t in strict.texts)
+    assert {rows(strict)[i + 0.5][1] for i in range(int(r.events.measurable.sum()))} == {"0.004"}   # not "0.0"
     assert "ridge" not in caption(run(s, adjusted=None), s)                  # no clinical term was penalized
 
 

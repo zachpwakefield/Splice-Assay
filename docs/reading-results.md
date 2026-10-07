@@ -66,15 +66,18 @@ three cohorts:
   under the groups count patients.
   - Δ is the median of the tumours minus the median of the normals.
   - p comes from the Mann–Whitney test.
-  - The dotted line is the KM split.
+  - The dotted line is the KM split. When the median is the highest PSI, the line sits at it, and the patients on it
+    form the high arm.
 - **Hits and q.** A design is a hit when p < 0.05, |Δ| > 0.10, the Hodges–Lehmann shift agrees in sign, and the result
   survives dropping PSI values of exactly 0 or 1. A q line appears when the gene has at least 10 such tests, with a
   `*` when q < 0.05.
 
 **Middle: Kaplan–Meier.** The cohort is split at the median PSI of its survival samples (or the mean, or a value set
-with `--km-split`); PSI at or below the split is the low arm.
+with `--km-split`); PSI at or below the split is the low arm. When more than half the patients share the highest
+PSI (often 1), no one is above the median, so PSI at the median is the high arm and PSI below it the low arm.
 - **Header.**
-  - The split: "split at median PSI 0.7705", or "split at PSI 0.5 (set)" for a value you gave.
+  - The split: "split at median PSI 0.7705", "split at median PSI 1 (high: at the median)" when the median is the
+    highest value, or "split at PSI 0.5 (set)" for a value you gave.
   - The log-rank HR (high vs low) and p, then q (with `*` when q < 0.05) and the events per arm.
 - **Curves.** 95% bands, with ticks for censored patients. The at-risk table counts patients still followed.
 - **A † after the log-rank p**, with a last line "† non-proportional hazards (p …)": the hazard ratio between the arms
@@ -88,7 +91,8 @@ stage).
   - PSI is per SD of PSI in this cohort (bold, diamond), or per IQR with `--hr-unit iqr`. Host expression and age are
     per SD. Categories are against
     the reference level named.
-  - Filled markers have p < 0.05.
+  - Filled markers have p < 0.05 (in the legend: the diamond for PSI as in the forest, squares for the other
+    terms).
   - A † after a row's p: that term failed the proportional-hazards test (p < 0.05), so its HR is an average over
     follow-up.
   - A `*` after the PSI row's p: its q (shown in the header) is below 0.05.
@@ -114,8 +118,11 @@ stage).
   - `stage left out (0% recorded)`: a covariate recorded for under 80% of the cohort is not in its model;
   - `host expression left out (no values)`, `(45% recorded)` or `(constant)`: the host gene's expression is missing,
     recorded for under 80% of the cohort, or constant there, so the model is PSI alone in this cohort;
-  - `unstable: …`: a covariate term with a standard error above 3. A term penalized by `--ridge` keeps its
-    standard error per SD or per level below 1/√λ (1 at the default), so a sparse level goes unflagged there.
+  - `unstable: …`: a term with a standard error above 3, per SD (or IQR) or per level: a 95% CI wider than 100,000-fold.
+    For a covariate this is usually a sparse level. For PSI itself (`unstable: PSI`) the fit has broken down, often
+    because a few patients away from the common PSI carry it, and its HR and p mean little; the report lists those
+    fits. A term penalized by `--ridge` keeps its standard error per SD or per level below 1/√λ (1 at the
+    default), so it goes unflagged there.
 
 ### 5. The forest of all cohorts
 
@@ -186,9 +193,17 @@ printed with their CI, p and q for the event and cohort it names. Read it agains
 ![Probe overview](reading/08_overview.png)
 
 - **Colour** is the HR per SD of PSI (of the HIT index for HIT events), from the adjusted model where it was fitted.
-  The caption names a ridge penalty when those fits have one.
-- **A dot** is p < 0.05 (a large dot p < 0.01); a `*` replaces it when q < 0.05. A frame marks a tumour–normal hit.
-  Grey cells were not tested.
+  The colour bar runs from HR 0.35 or lower to 2.8 or higher, lower hazard to the left. The caption names a ridge
+  penalty when those fits have one.
+- **Marks.** The key beside the colour bar shows each one as drawn: a dot is p < 0.05 (a large dot p < 0.01); a `*`
+  replaces it when q < 0.05; a frame marks a tumour–normal hit; grey cells were not tested.
+- **Pale, hatched cells are imprecise:** the 95% CI spans more than 8-fold (`imprecise_ci_ratio`), or the fit has
+  fewer than 20 events. Their HR is the least reliable number on the figure, and the most extreme HRs often come
+  from such fits, so their colour is muted toward the middle while keeping its direction. A dot there still means
+  p < 0.05, but the size of the effect is unknown. A whole hatched column is a cohort with few deaths.
+- **At the right of each row:** the cohorts with p < 0.05 of those tested (`3/27`), the number chance would give
+  (5% of the tested cohorts, `1.4`), and how many of the hits have an HR above (↑) or below (↓) 1. An event with
+  hits well above chance, in one direction, is worth more than one dark cell.
 - **Rows** follow the ranking; each event's label has its type's colour, as on the gene maps and the pages.
 - **The last row** (with an expression table) is the host gene's own expression: the HR per SD of expression from
   Cox on expression + age + sex + stage, a dot for p < 0.05 and a frame for a tumour–normal expression hit
@@ -210,8 +225,10 @@ results laid out along the gene.
   far longer than the gene's typical exon; the header says which. Without a GTF there is no gene model. Events that
   are not drawn are counted under the title: those observed in under half of every cohort's survival samples
   (`--min-observed`; in TCGA data often most of a gene's annotated events), and those without usable coordinates.
-- **Cells.** The overview's cells for each row: the HR per SD in each cohort, with the same dot, `*` and frame. The
-  gene's own row holds its expression's HR.
+- **Cells.** The overview's cells for each row: the HR per SD in each cohort, with the same dot, `*`, frame and
+  pale hatching. The gene's own row holds its expression's HR.
+- **The key** under the gene shows the drawing (exon, region measured by PSI, the two junctions, an exon's column)
+  and the cells' marks, beside the colour bars.
 - **ρ between events** (with `--correlation`): a lower triangle over the event rows. Each cell is the Spearman ρ
   between two events' PSI, computed in each cohort and summarised by its median over the cohorts; the grey numbers on
   the diagonal name the columns by rank. A frame marks |ρ| ≥ 0.7. Each event's ρ with the gene's expression is in
@@ -227,7 +244,8 @@ results laid out along the gene.
   each pair of its events (the better-ranked event on the left).
 - **Colour and value** are Spearman ρ in the cohort's tumour samples (one per patient, the survival samples): green
   positive, purple negative. The value is black where p < 0.05 and grey otherwise. A frame marks |ρ| ≥ 0.7, and a
-  grey cell was not tested. With many cohorts the cells are too narrow for values, and a dot marks p < 0.05.
+  grey cell was not tested; the key beside the colour bar shows each. With many cohorts the cells are too narrow
+  for values, and a dot marks p < 0.05.
 - **With host-gene expression:** a strong ρ means the event's PSI largely follows the gene's level: its adjusted HR
   then has a wider CI, and a KM hit could be expression's.
 - **Between events:** a strongly correlated pair counts as one piece of evidence. Two alternative first (or last)
@@ -239,7 +257,7 @@ results laid out along the gene.
 | File | One row per | Key columns |
 |---|---|---|
 | `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `adj_cox_p05_low_power`, `cox_p05`, `cox_p05_low_power`, `km_p05`, `group_hits`, `best_cohort`, `best_model`, `best_hr_per_sd`, `best_p`, `best_low_power`, `protein_change`, `page` |
-| `cells.csv` | event × cohort | `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `cox_notes`), adjusted Cox (`adj_*`) |
+| `cells.csv` | event × cohort | `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ties_high`, `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `psi_unstable`, `cox_notes`), adjusted Cox (`adj_*`) |
 | `expression_cells.csv` | host gene × cohort | the same tests for expression (HR per SD) |
 | `correlations.csv` (with `--correlation`) | pair × cohort | `kind` (expression, event), `event_id`, `partner`, `rho`, `corr_p`, `corr_q`, `corr_n`, `corr_status`; `expr_rho` in `cells.csv`, `best_expr_rho` in `events.csv` |
 | `proteins.csv` | event | the matched transcripts, how they matched, residues, effect and features |
@@ -248,16 +266,18 @@ results laid out along the gene.
 ## A reading order
 
 1. **In `report.md`**, compare the p < 0.05 counts with what chance gives, then read the notes section.
-2. **On the gene map**, see where the hits sit on the gene and whether they come from events that share exons (or,
+2. **On the overview**, read each row's counts at the right (hits against chance, and their directions) before its
+   darkest cell, and discount pale, hatched cells: a strong colour with a dot and no hatching is the candidate.
+3. **On the gene map**, see where the hits sit on the gene and whether they come from events that share exons (or,
    with `--correlation`, that move together).
-3. **Open the pages** of the top-ranked events.
-4. **On each page:**
+4. **Open the pages** of the top-ranked events.
+5. **On each page:**
    - **Details line:** is this the event you meant?
    - **Group view:** is there a tumour–normal change, and does it hold within patients?
    - **KM:** do the curves separate steadily, or do they cross (a †)?
    - **Model:** does the PSI term hold with the clinical terms, and does the header carry notes?
    - **Forest:** do the other cohorts point the same way?
-5. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
+6. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
    cohorts? Where expression is equally prognostic, a splicing association could be an expression echo.
-6. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
+7. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,
    and an association that survives adjustment. One small p is not. Everything a probe prints is nominal.

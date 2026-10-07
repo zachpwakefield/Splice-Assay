@@ -256,6 +256,49 @@ def test_km_split_rules():
     assert row["km_split"] == "mean" and np.isclose(row["cutoff"], g.mean())
 
 
+def test_km_split_when_the_median_is_the_highest_or_lowest_value():
+    """PSI 1 in most patients: no one is above the median, so the arms are at the median (high) vs below it; PSI 0 in
+    most patients: the arms are above the median (high) vs at it, as before."""
+    from splice_assay.stats.survival import expression_cell, km_high
+    x, pos, t, e = cohort(6)
+    rng = np.random.default_rng(6)
+    top = np.where(rng.uniform(size=len(x)) < 0.6, 1.0, np.minimum(x, 0.97))
+    r, _ = survival_cell(top, pos, t, e, None, S)
+    assert r["cutoff"] == 1.0 and r["km_ties_high"] and r["km_status"] == "tested"
+    assert r["n_high"] == (top == 1).sum() and r["n_low"] == (top < 1).sum()
+    assert r["events_high"] == e[top == 1].sum()
+    bottom = 1 - top
+    r0, _ = survival_cell(bottom, pos, t, e, None, S)
+    assert r0["cutoff"] == 0.0 and not r0["km_ties_high"] and r0["km_status"] == "tested"
+    assert r0["n_high"] == (bottom > 0).sum()
+    assert r0["km_p"] == pytest.approx(r["km_p"])                # the same two groups, mirrored
+    mid, _ = survival_cell(x, pos, t, e, None, S)                    # a median inside the range: unchanged
+    assert not mid["km_ties_high"] and mid["n_high"] == (x > np.median(x)).sum()
+    assert km_high([0.5, 1.0, 1.0], 1.0, True).tolist() == [False, True, True]
+    g, _ = expression_cell(np.where(top == 1, 5.0, top * 4), pos, t, e, S)   # expression: the same rule
+    assert g["km_ties_high"] and g["n_high"] == (top == 1).sum()
+
+
+def test_an_unstable_psi_term_is_noted(monkeypatch):
+    """A PSI term whose SE per SD is above 3 (a broken-down fit, its 95% CI over 100,000-fold): psi_unstable and an
+    'unstable: PSI' note; the fit and its numbers stand."""
+    import splice_assay.stats.survival as SV
+    x, pos, t, e = cohort(7)
+    ok, _ = survival_cell(x, pos, t, e, None, S)
+    assert ok["psi_unstable"] is False and "unstable" not in ok["cox_notes"]
+    real = SV.fit_cox
+
+    def wide(*a, **k):                                       # the same fit with a PSI SE 1000 times larger
+        f = real(*a, **k)
+        f["se"] *= 1000
+        f["summary"].loc["psi10", "se(coef)"] *= 1000
+        return f
+    monkeypatch.setattr(SV, "fit_cox", wide)
+    r, _ = survival_cell(x, pos, t, e, None, S)
+    assert r["cox_status"] == "tested" and r["psi_unstable"] is True
+    assert "unstable: PSI (se > 3)" in r["cox_notes"] and r["ci_high_sd"] / r["ci_low_sd"] > 1e5
+
+
 def test_hr_per_sd_setting():
     """The tables hold the HR per IQR and per SD; psi_hr_unit picks the model term shown, and the narrow-range note
     follows it unless narrow_psi_measure is set."""

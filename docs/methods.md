@@ -100,9 +100,14 @@ effect is case minus reference (for example tumour minus normal).
 - **KM split.** Set by `km_split` (`--km-split`): the median (default) or the mean of PSI over the survival
   samples, or a value you give (e.g. 0.5). The split is fixed per cohort and shared by every endpoint.
   - PSI ≤ the split is the low arm; PSI > the split is the high arm.
+  - **A median at the highest value.** When more than half the patients share the highest PSI (often 1), no one is
+    above the median, so the arms are PSI at the median (high) and PSI below it (low); `km_ties_high` is true in the
+    tables and the KM header adds "(high: at the median)". A median at the lowest value (often 0) needs no
+    exception: PSI at it is the low arm and PSI above it the high arm. The same holds for expression.
   - A given value applies to every event and cohort. Where it leaves an arm below `km_min_group`, no log-rank test
     runs.
-  - `km_split` in the tables is `median`, `mean` or `set`, and `cutoff` is the value.
+  - `km_split` in the tables is `median`, `mean` or `set`, `cutoff` is the value, and `km_ties_high` says whether
+    the values at the cutoff form the high arm.
   - The log-rank test needs `km_min_group` (10) patients per arm and `km_min_events` (10) events.
   - The log-rank HR is (O/E of the high arm) / (O/E of the low arm).
   - Bands are 95% log-log (exponential Greenwood) intervals. The at-risk table counts patients still followed at each
@@ -223,9 +228,10 @@ the gene's expression page; the probe's `expression_cells.csv`).
   expression table's scale.
   - There is no 0/1 robustness check, because that is specific to PSI.
   - A hit needs |Δ median| > `gex_min_abs_delta`: 1.0 by default, which is two-fold on a log2 scale.
-- **KM.** A split of expression over the cohort's survival samples (expression ≤ the split is the low arm), with the
-  same coverage and size gates as PSI. The split is set by `km_split_expression` (`--km-split-expression`): the
-  median (default), the mean, or a value on the expression table's scale.
+- **KM.** A split of expression over the cohort's survival samples (expression ≤ the split is the low arm, or
+  expression below it when the median is the highest value, as for PSI), with the same coverage and size gates as
+  PSI. The split is set by `km_split_expression` (`--km-split-expression`): the median (default), the mean, or a
+  value on the expression table's scale.
 - **Cox.** h(t) = h0(t) exp(b · z(expression) + clinical terms). The clinical terms and strata are those of the
   page's model rows (by default age, sex and stage), with the same completeness rule. The HR is per SD of
   expression in the fit cohort. Status `constant_expression` when expression does not vary.
@@ -277,8 +283,9 @@ would add their difference in level to the correlation.
   reference I–II.
 - **Variables missing in a cohort.** Below `covariate_min_complete` (80%) recorded in a cohort, a variable is left out
   of that cohort's model (`cox_notes`).
-- **Unstable terms.** A covariate term with se > 3 (a sparse level, or near separation) is reported and flagged as
-  unstable in `cox_notes`.
+- **Unstable terms.** A term with se > 3 per SD or per level (a 95% CI over 100,000-fold: a sparse level, or near
+  separation) is reported and flagged as unstable in `cox_notes`. When it is the PSI term itself (`unstable: PSI`,
+  `psi_unstable`), the fit has broken down and the probe report lists it.
 - **Notes on a fit.** These notes go in `cox_notes` and on the page's model header (the KM one in `km_notes` and on
   the KM header). All are notes only: the test runs and its estimates are unchanged.
   - **Overfit risk:** fewer than `cox_events_per_term` (10) events per estimated term. Terms are the PSI, expression
@@ -337,7 +344,8 @@ would add their difference in level to the correlation.
   - With no reference samples in the cohort: the reason only.
   - With no reference samples anywhere in the data: no group view.
 - **Event panel: KM.** The split, bands, censoring ticks and the at-risk table. Above the axes:
-  - the split, e.g. "split at median PSI 0.7705" or "split at PSI 0.5 (set)";
+  - the split, e.g. "split at median PSI 0.7705", "split at median PSI 1 (high: at the median)" or "split at
+    PSI 0.5 (set)";
   - the log-rank HR and p (with † for non-proportional hazards);
   - q, when the family is large enough;
   - the events per arm;
@@ -367,6 +375,18 @@ would add their difference in level to the correlation.
     clinical terms.
   - `panel` and `probe` draw the cohorts of the gene's splicing pages (their union in a probe). `--no-gex` leaves the
     page out.
+- **Probe summary figures** (the overview, the gene maps and the correlation figure).
+  - **Keys.** Each figure draws its marks in a key beside its colour bar (on a gene map, under the gene, with the
+    drawing of the events too); the captions keep only what the colour shows and which model.
+  - **HR colour.** log2 HR from −1.5 to 1.5 (HR 0.35 to 2.8, clipped beyond), lower hazard blue.
+  - **Imprecise cells.** A survival cell is drawn pale (its colour 82% of the way to the neutral middle) and
+    hatched when the shown fit's 95% CI spans more than `imprecise_ci_ratio` (8; high / low) or the fit is low
+    power (fewer than `cox_low_power_events` events). The point is visual weight: with few events or little spread
+    in PSI the estimates scatter widely, so the most extreme colours would otherwise come from the least reliable
+    fits. The dot (p) and `*` (q) are unchanged, and the tables keep every HR. 0 turns it off.
+  - **Overview counts.** At the right of each row: the cohorts with p < α in the shown fit (the adjusted model
+    where fitted, else the base model) of those tested, α times the number tested (what chance would give), and how
+    many of those hits have HR above and below 1.
 
 ## Reproducibility
 

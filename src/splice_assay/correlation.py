@@ -170,19 +170,28 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
                                                + [0.8]))
     x_grid = 0.12 + label_w + 0.14
     x_right = x_grid - 0.10 - right_w                     # the right-hand labels start here
-    W = max(4.5, x_grid + nc * cw + 0.3)
+    bar_w = 1.6
+    W = max(4.5, x_grid + max(nc * cw, bar_w) + 0.3)     # the colour bar may reach past a narrow grid
     x_all = sum(len(rx) for _, rx, _ in per_gene.values())
     shown = ("the expression rows of the best-ranked genes" if sum(map(len, keep_x.values())) < x_all else
              "each gene's expression rows, then its strongest pairs" if any(keep_p.values()) else
              "each gene's expression rows")
     more = f"; {n_data} of {n_all} rows: {shown} (all in correlations.csv)" if n_all > n_data else ""
     caption = (f"colour{' and value' if values else ''}: Spearman ρ in each cohort's survival samples (one case sample "
-               "per patient, as in the survival tests)"
-               + (f"; value black: p < {s.alpha:g}, grey: p ≥ {s.alpha:g}" if values else
-                  f"; dot: p < {s.alpha:g} (large: < 0.01)")
-               + (f"; frame: |ρ| ≥ {s.corr_note_above:g}" if s.corr_note_above > 0 else "")
-               + f"; grey cell: not tested (fewer than {s.corr_min_n} patients with both values, or no spread)" + more)
+               "per patient, as in the survival tests)" + more)
     cap = G.clauses(caption, W - 0.24, 5.8)
+    scale = G.rho_scale()
+    cmap, norm = scale
+    fair, strong_ = cmap(norm(0.42)), cmap(norm(0.8))                 # sample cells for the key
+    items = ([(dict(face=fair, value=(".42", S.INK)), f"p < {s.alpha:g}"),
+              (dict(face=fair, value=(".42", S.MUTED)), f"p ≥ {s.alpha:g}")] if values else
+             G.p_dots(fair, s))
+    if s.corr_note_above > 0:
+        items.append((dict(face=strong_, frame=True, value=(".80", G.ink_on(strong_)) if values else None),
+                      f"|ρ| ≥ {s.corr_note_above:g}"))
+    items.append((dict(face=G.UNTESTED), f"not tested (fewer than {s.corr_min_n} patients with both values, or no "
+                                         "spread)"))
+    lay = G.legend_layout(W, x_grid, bar_w, items)
     lab_h = max(S.text_width(c, 5.6) for c in cohorts) + 0.06
     top = 0.30 + 0.12 * len(cap) + 0.10 + lab_h
     pitch = {"gene": 0.30, "sub": 0.20, "row": 0.20}
@@ -192,9 +201,7 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
         ys.append(y)
         y += pitch[kind]
     n_h = y
-    H = top + n_h + 0.62
-    scale = G.rho_scale()
-    cmap, norm = scale
+    H = top + n_h + lay.bottom
     with matplotlib.rc_context(S.rc()):
         fig = Figure(figsize=(W, H))
         fx = (lambda x: x / W)                                            # noqa: E731
@@ -250,6 +257,6 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
         fig.text(fx(0.12), fy(0.10), "Probe correlation", fontsize=8.5, fontweight="bold", va="top")
         for k, line in enumerate(cap):
             fig.text(fx(0.12), fy(0.30 + 0.12 * k), line, fontsize=5.8, color=S.INK2, va="top")
-        G.colorbar(fig, x_grid, H - 0.33, min(1.6, max(nc * cw, 1.0)), W, H, scale, [-1, -0.5, 0, 0.5, 1],
-                   ["−1", "−.5", "0", ".5", "1"], "Spearman ρ")
+        G.bar_and_key(fig, W, H, lay, x_grid, bar_w, items, scale, [-1, -0.5, 0, 0.5, 1], ["−1", "−.5", "0", ".5", "1"],
+                      "Spearman ρ", ends=("opposite", "together"))
     return fig

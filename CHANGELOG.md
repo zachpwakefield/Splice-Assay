@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Imprecise cells.** The probe overview and gene maps draw a survival cell pale and hatched when its 95% CI
+  spans more than 8-fold or its fit has fewer than 20 events (setting `imprecise_ci_ratio`, 0 = never). The most
+  extreme HRs often came from such fits (in TCGA TP53, 6 of the 7 darkest OS cells) and drew the eye; their colour
+  is now muted toward the middle, keeping its direction. Dots, `*` and the tables are unchanged.
+- **Overview counts.** At the right of each overview row: its cohorts with p < 0.05 of those tested, the number
+  chance would give, and how many of those hits have HR above and below 1.
+- **Keys, not captions.** The overview, the gene maps and the correlation figure draw their marks (dots, `*`,
+  frames, untested, imprecise; black and grey values) in a key beside the colour bar; the gene maps also key the
+  drawing (exon, region measured by PSI, the two junctions, an exon's column). The HR colour bar marks 0.5, 1
+  and 2 and, where it is wide enough, its ends (≤0.35, ≥2.8) and which end is lower hazard. On the pages, the
+  model rows' filled and open squares are in the legend instead of a "Filled: p < 0.05" note.
+- **Unstable PSI fits.** A PSI term with an SE above 3 per SD (per IQR with `--hr-unit iqr`; a 95% CI over
+  100,000-fold) is noted "unstable: PSI" (`psi_unstable`, as covariate terms already were), and the probe report
+  lists those fits.
+- **KM split at a median that is the highest value.** When more than half of a cohort's patients share the highest
+  PSI (often 1), no one was above the median, so no log-rank test ran ("too few patients or events"). The arms are
+  now PSI at the median (high) and below it (low): new column `km_ties_high`, and "(high: at the median)" in the
+  KM header. The same holds for the HIT index and for host-gene expression. A median at the lowest value (often 0)
+  already split at it vs above it. More log-rank tests can run, so KM q values and the ranking can change.
 - **`--table` names are checked.** An unknown table name (`--table clincal=…`, or a misspelt keyword of
   `Dataset.from_dir`) is an error, raised before any table is read; it was ignored, and the folder's table of the
   intended name was read instead.

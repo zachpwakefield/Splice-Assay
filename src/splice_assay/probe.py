@@ -8,8 +8,10 @@ stage, found in the clinical table; see clinical.py). Then:
     cells.csv       one row per event x cohort: group tests, KM, base and adjusted Cox, q values (BH within each
                     gene, per kind of test)
     events.csv      one row per event, ranked (see RANKING)
-    overview.png    events x cohorts: adjusted HR per IQR or SD (colour), adjusted p < 0.05 (dot), q < 0.05 (*),
-                    group hit (frame); with an expression table, the host genes' own rows below the events
+    overview.png    events x cohorts: adjusted HR per IQR or SD (colour; pale and hatched when imprecise), adjusted
+                    p < 0.05 (dot), q < 0.05 (*), group hit (frame); right of each row, its cohorts with p < 0.05 of
+                    those tested beside the number chance would give; with an expression table, the host genes' own
+                    rows below the events
     gene_map_<GENE>.png   per gene: its model (with a GTF) and its probed events observed in enough samples, 5' to 3',
                     each row beside its cells of the overview (the gene's own row: its expression) and, with
                     correlation=True, the median rho between its events (see plot/genemap.py)
@@ -60,7 +62,7 @@ RANKING = ("measurable events first; then cohorts where the adjusted Cox p < 0.0
            "the best cohort (adjusted Cox, else base Cox, else KM)")
 ADJ_COLS = ["cox_status", "cox_model", "cox_n", "cox_events", "cox_n_dropped", "cox_notes", "hr_per_iqr",
             "ci_low_iqr", "ci_high_iqr", "hr_per_sd", "ci_low_sd", "ci_high_sd", "cox_p", "cox_q", "cox_q_tests",
-            "cox_low_power", "cox_events_per_term", "psi_narrow", "ph_p"]
+            "cox_low_power", "cox_events_per_term", "psi_narrow", "psi_unstable", "ph_p"]
 
 
 @dataclass
@@ -122,8 +124,15 @@ def combine(base: Results, adj: Results | None, endpoint: str) -> pd.DataFrame:
 
 
 def _flag(v) -> bool:
-    """A True/False cell that may be missing (NaN, None) or a numpy bool."""
+    """A True/False cell that may be missing (NaN, None), a numpy bool, or text read back from a table."""
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "1.0")
     return bool(v) if v is not None and not (isinstance(v, float) and np.isnan(v)) else False
+
+
+def _chance(x: float) -> str:
+    """The number of hits chance would give, as the overview prints it: '0.2', '1.6', or '0.004' when small."""
+    return f"{x:.1f}" if x >= 0.1 else f"{x:.2g}"
 
 
 def _true(col: pd.Series) -> pd.Series:
@@ -272,10 +281,15 @@ def _fit_note(cells: pd.DataFrame, ev: pd.DataFrame, s: Settings) -> str:
     return f"adjusted model where fitted{ridge}"
 
 
+OVERVIEW_STATS_W = 1.25                 # inches: the per-row counts at the right of the overview
+
+
 def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settings, max_rows: int = 60,
              gex_cells: pd.DataFrame | None = None, gex_model: str = "", hosts=None):
-    """Events (rows, rank order) x cohorts: HR per SD or IQR (adjusted when fitted, else base) in colour, p < alpha as a
-    dot, a group hit as a frame; grey = not tested.
+    """Events (rows, rank order) x cohorts: HR per SD or IQR (adjusted when fitted, else base) in colour, pale and
+    hatched when the fit is imprecise (grid.imprecise), p < alpha as a dot, a group hit as a frame; grey = not tested;
+    a key to these marks beside the colour bar. At the right of each row: its cohorts with p < alpha of those tested,
+    the number chance would give (alpha of them), and how many of those hits have HR above and below 1.
 
     With `gex_cells` (the host genes' own statistics, as in expression_cells.csv), one row per host gene below the
     events (`hosts`: event ID -> host gene, e.g. Dataset.events.expression_gene): the HR per SD of expression from Cox
@@ -298,25 +312,37 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
     label_w = max([S.text_width(f"{r.label}  {r.gene}", 6.0) for r in ev.itertuples()]
                   + [S.text_width(f"{g} expression", 6.0) for g, _ in gx] + [0.8]) + 0.25
     v = _value_name(ev.event_type)
-    caption = (f"colour: HR per {s.psi_hr_unit.upper()} of {v} ({_fit_note(cells, ev, s)})"
-               + f"; dot: p < {s.alpha:g} (large: < 0.01)"
-               + (f"; {S.Q_MARK}: q < {s.q_mark_below:g}" if s.q_mark_below > 0 else "")
-               + "; frame: group hit; grey: not tested")
+    caption = (f"colour: HR per {s.psi_hr_unit.upper()} of {v} ({_fit_note(cells, ev, s)}); right: the cohorts with "
+               f"p < {s.alpha:g} of those tested, the number chance would give ({s.alpha * 100:g}% of them), and the "
+               "hits' HR above (↑) or below (↓) 1")
     gex_caption = (f"{'last row' if len(gx) == 1 else 'last rows'}: host-gene expression, HR per SD of expression "
                    f"(Cox on {gex_model or 'expression'}); frame: group hit (|Δ median| > {s.gex_min_abs_delta:g}); "
                    "not adjusted for multiple testing") if gx else ""
-    W = max(4.5, label_w + nc * cell_w + 0.4)
+    W = max(4.5, label_w + nc * cell_w + 0.15 + OVERVIEW_STATS_W + 0.12)
     lines = [G.clauses(c, W - 0.24, 5.8) for c in (caption, gex_caption) if c]       # each caption on its own lines
     n_lines = sum(len(x) for x in lines)
     lab_h = max(S.text_width(c, 5.6) for c in cohorts) + 0.06 if cohorts else 0.2   # the cohort names, upright
     top = 0.30 + 0.12 * n_lines + 0.10 + lab_h
-    H = top + n_rows * cell_h + 0.62
+    bar_w = 1.6                                         # under the grid and beyond it when the grid is narrow
+    items = G.hr_key(s)
+    lay = G.legend_layout(W, label_w, bar_w, items)
+    bottom = lay.bottom
+    H = top + n_rows * cell_h + bottom
+    tally = {}                                          # row -> [p < alpha, tested, HR above 1, HR below 1]
+
+    def count(i, tested, hr, p):
+        t = tally.setdefault(i, [0, 0, 0, 0])
+        if tested and np.isfinite(p):
+            t[1] += 1
+            if p < s.alpha:
+                t[0] += 1
+                t[2] += bool(hr > 1)
+                t[3] += bool(hr < 1)
     scale = G.hr_scale()
-    cmap, norm = scale
     idx = cells.set_index(["event_id", "cohort"])
     with matplotlib.rc_context(S.rc()):
         fig = Figure(figsize=(W, H))
-        ax = fig.add_axes([label_w / W, 0.62 / H, nc * cell_w / W, n_rows * cell_h / H])
+        ax = fig.add_axes([label_w / W, bottom / H, nc * cell_w / W, n_rows * cell_h / H])
         ax.set_xlim(0, nc)
         ax.set_ylim(n_rows, 0)
         for k, (gene, g) in enumerate(gx):                                  # the host genes' own rows
@@ -327,8 +353,13 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
                 x = g.loc[c]
                 tested = x.get("cox_status") == "tested"
                 hr, p = x.get("hr_per_sd", np.nan), x.get("cox_p", np.nan)
-                face = cmap(norm(np.log2(hr))) if tested and np.isfinite(hr) else G.UNTESTED
-                ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, facecolor=face, lw=0))
+                pale = tested and G.imprecise(x.get("ci_low_sd"), x.get("ci_high_sd"), x.get("cox_low_power"), s)
+                face = G.hr_face(hr, tested, pale, scale)
+                count(i, tested, hr, p)
+                rect = Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, facecolor=face, lw=0)
+                ax.add_patch(rect)
+                if pale:
+                    G.hatch(ax, rect)
                 if _flag(x.get("group_hit", False)):
                     ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, fill=False, edgecolor=S.INK, lw=0.7))
                 if tested and np.isfinite(p) and p < s.alpha:
@@ -338,9 +369,13 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
                 if (r.event_id, c) not in idx.index:
                     continue
                 x = idx.loc[(r.event_id, c)]
-                tested, hr, p, q = G.shown_fit(x, s)
-                face = cmap(norm(np.log2(hr))) if tested and np.isfinite(hr) else G.UNTESTED
-                ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, facecolor=face, lw=0))
+                tested, hr, p, q, pale = G.shown_fit(x, s)
+                face = G.hr_face(hr, tested, pale, scale)
+                count(i, tested, hr, p)
+                rect = Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, facecolor=face, lw=0)
+                ax.add_patch(rect)
+                if pale:
+                    G.hatch(ax, rect)
                 if _flag(x.get("group_hit", False)):
                     ax.add_patch(Rectangle((j + 0.04, i + 0.06), 0.92, 0.88, fill=False, edgecolor=S.INK, lw=0.7))
                 if tested and s.q_mark_below > 0 and np.isfinite(q) and q < s.q_mark_below:   # q, not just p
@@ -361,9 +396,20 @@ def overview(cells: pd.DataFrame, events: pd.DataFrame, endpoint: str, s: Settin
         fig.text(0.12 / W, 1 - 0.1 / H, f"Probe overview · {endpoint}", fontsize=8.5, fontweight="bold", va="top")
         for k, line in enumerate(x for block in lines for x in block):
             fig.text(0.12 / W, 1 - (0.30 + 0.12 * k) / H, line, fontsize=5.8, color=S.INK2, va="top")
-        G.colorbar(fig, label_w, H - 0.33, min(1.6, max(nc * cell_w, 1.0)), W, H, scale, [-1, 0, 1],
-                   ["0.5", "1", "2"], f"HR per {s.psi_hr_unit.upper()}"
-                   + (" (expression: per SD)" if gx and s.psi_hr_unit != "sd" else ""))
+        at = (lambda inch: nc + inch / cell_w)                            # noqa: E731  (inches right of the grid)
+        for x_, text, ha in ((0.50, f"p < {s.alpha:g}", "right"), (0.86, "chance", "right"), (0.96, "HR", "left")):
+            ax.text(at(x_), -0.25, text, fontsize=5.4, color=S.INK2, ha=ha, va="bottom", clip_on=False)
+        rows_y = list(range(nr)) + [nr + gap + k for k in range(len(gx))]
+        for i in rows_y:
+            k, n, up, down = tally.get(i, [0, 0, 0, 0])
+            for x_, text, ha in ((0.50, f"{k}/{n}" if n else "–", "right"),
+                                 (0.86, _chance(s.alpha * n) if n else "", "right"),
+                                 (0.96, f"{up}↑ {down}↓" if k else "", "left")):
+                ax.text(at(x_), i + 0.5, text, fontsize=5.6, color=S.INK if x_ == 0.50 and k else S.INK2, ha=ha,
+                        va="center", clip_on=False)
+        G.bar_and_key(fig, W, H, lay, label_w, bar_w, items, scale, *G.HR_TICKS,
+                      f"HR per {s.psi_hr_unit.upper()} of {v}"
+                      + (" (expression: per SD)" if gx and s.psi_hr_unit != "sd" else ""), ends=G.HR_ENDS)
     return fig
 
 
@@ -687,6 +733,15 @@ def _flag_lines(cells: pd.DataFrame, ds: Dataset, s: Settings, adj_model) -> lis
                    + (f"; with p < {s.alpha:g}{' (base or adjusted model)' if adj_model else ''}: "
                       f"{', '.join(name(r) for r in sig.itertuples())}" if len(sig) else "")
                    + ". There, p ≥ 0.05 says little against an association.")
+    shaky = (lambda d, col: d[_true(d[col])] if col in d else d.iloc[:0])
+    ub, ua = shaky(t, "psi_unstable"), shaky(ta, "adj_psi_unstable")
+    if len(ub) or len(ua):
+        both = pd.concat([ub, ua]).drop_duplicates(subset=["event_id", "cohort"])
+        out.append(f"- **Unstable fits** (the {v} term's SE above 3 per {s.psi_hr_unit.upper()}, a 95% CI wider "
+                   "than 100,000-fold: the fit has broken down, often because a few patients away from the common "
+                   f"{v} carry it; its HR and p mean little): {len(ub)} of {len(t)} base-model fits"
+                   + (f", {len(ua)} of {len(ta)} adjusted fits" if adj_model else "")
+                   + f" ({', '.join(name(r) for r in both.itertuples())}).")
     gone = (lambda d, col: d[d[col].fillna("").astype(str).str.contains("host expression left out", regex=False)]
             if col in d else d.iloc[:0])
     lb, la = gone(t, "cox_notes"), gone(ta, "adj_cox_notes")
@@ -960,7 +1015,8 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
           "| File | Content |", "|---|---|",
           "| `events.csv` | One row per event: counts across cohorts, best cohort, page |",
           "| `cells.csv` | One row per event × cohort: group tests, KM, base and adjusted Cox (`adj_*`), q values |",
-          "| `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame"
+          f"| `overview.png` | Events × cohorts: HR colour (pale and hatched when imprecise), p < {s.alpha:g} dot, "
+          "group-hit frame; each row's hits beside the number chance would give"
           + ("; the host gene's expression in its own row" if gex_cells is not None and len(gex_cells) else "") + " |",
           *([f"| `gene_map_<GENE>.png` ({', '.join(m.removeprefix('gene_map_') for m in maps)}) | Each gene's model "
              "and its probed events, 5′ to 3′, beside their cells of the overview"

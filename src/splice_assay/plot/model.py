@@ -15,7 +15,8 @@ from ..stats.survival import CoxModel
 from . import style as S
 from .panel_common import ENDPOINT_NAMES, Panel, model_mismatch, safe_name
 
-MODEL_NOTE = "Filled: p < {alpha:g}. Numeric covariates per SD of the fit cohort; categories against the level named."
+SCALE_NOTE = "Numeric covariates per SD of the fit cohort; categories against the level named."
+MODEL_NOTE = "Filled: p < {alpha:g}. " + SCALE_NOTE     # for a model on its own; pages show filled and open in the key
 MAIN = ("psi_iqr", "psi_sd", "gex")                      # the tested term of a model: drawn bold, with a diamond
 
 

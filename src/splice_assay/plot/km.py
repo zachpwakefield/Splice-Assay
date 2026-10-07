@@ -23,12 +23,14 @@ PH_MARK = "†"                               # marks a proportional-hazards tes
 
 
 def split_text(row, what: str) -> str:
-    """'split at median PSI 0.7705' (or mean), or 'split at PSI 0.5 (set)' for a split given in the settings."""
+    """'split at median PSI 0.7705' (or mean), 'split at PSI 0.5 (set)' for a split given in the settings, and
+    'split at median PSI 1 (high: at the median)' when the median is the highest value (see survival.km_cut)."""
+    from ..stats.survival import ties_high
     how = row.get("km_split") or "median"
     how = how if isinstance(how, str) else "median"
     if how == "set":
         return f"split at {what} {S.fcut(row['cutoff'])} (set)"
-    return f"split at {how} {what} {S.fcut(row['cutoff'])}"
+    return f"split at {how} {what} {S.fcut(row['cutoff'])}" + (" (high: at the median)" if ties_high(row) else "")
 
 
 def draw(fig, ax, t_years, event, high, row: dict, ylabel: str, rows: list, tag: str, settings, what: str = "PSI"):

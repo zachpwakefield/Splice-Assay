@@ -67,7 +67,13 @@ def test_strong_pairs_and_the_figure(ds):
     assert {"SYN3", "with SYN3 expression", "between its events", "AFE:0001", "AFE:0002", "×"} <= set(texts)
     values = [t.get_text() for t in fig.axes[0].texts if t.get_text().startswith("−.9")]
     assert len(values) == 4                                                # the pair in each cohort, printed
+    assert {"p < 0.05", "p ≥ 0.05", "|ρ| ≥ 0.7"} <= set(texts)                # the key, not the caption
+    assert not any("value black" in t for t in texts)
     assert correlation_figure(c.iloc[:0], ranked, FAST) is None
+    two = c[c.cohort.isin(sorted(c.cohort.unique())[:2])]                       # a narrow grid, long labels
+    long = ranked.assign(label=["AFE:0001 the first exon of a much longer form", "AFE:0002 the other first exon"])
+    narrow = correlation_figure(two, long, FAST)
+    assert all(a.get_position().x1 <= 1 + 1e-9 for a in narrow.axes)            # the colour bar within the figure
 
 
 def test_probe_with_correlation(ds, tmp_path):
@@ -209,11 +215,26 @@ def test_the_overview_layout(ds, tmp_path):
     gex = pd.read_csv(res.paths["expression"])
     with_row = overview(res.cells, res.events, "OS", FAST, gex_cells=gex)
     assert with_row.axes[0].get_ylim() == (nr + 1.5, 0) and with_row.get_figwidth() == pytest.approx(4.5)
-    caption_lines = (lambda f: len([t for t in f.texts if t.get_text() != "Probe overview · OS"]))
+    caption_lines = (lambda f: len([t for t in f.texts if t.get_fontsize() == 5.8]))      # not the key's labels
     assert caption_lines(with_row) > caption_lines(plain) >= 2                  # wrapped, not one long line
     assert with_row.get_figheight() > plain.get_figheight()
     colours = {t.get_text(): t.get_color() for t in plain.axes[0].get_yticklabels()}
     assert colours[next(k for k in colours if "SE:1" in k)] == TYPE_COLOR["SE"]
+
+
+def test_the_overview_hatches_imprecise_cells(ds, tmp_path):
+    """Every shown fit beyond the CI ratio is hatched; none with the setting at 0."""
+    from matplotlib.collections import LineCollection
+
+    from splice_assay.plot import grid as G
+    res = probe(ds, genes=["SYN1"], settings=FAST, out_dir=tmp_path, max_pages=0, gex=False, log=lambda *_: None)
+    hatched = (lambda s: sum(isinstance(c, LineCollection) for c in overview(res.cells, res.events, "OS", s)
+                             .axes[0].collections))
+    tight = FAST.replace(imprecise_ci_ratio=1.001)                              # every CI is wider than that
+    ev = set(res.events[res.events.measurable].event_id)
+    shown = [G.shown_fit(x, tight) for _, x in res.cells[res.cells.event_id.isin(ev)].iterrows()]
+    assert hatched(tight) == sum(f.imprecise for f in shown) == sum(f.tested for f in shown) > 0
+    assert hatched(FAST.replace(imprecise_ci_ratio=0)) == 0
 
 
 def test_the_correlation_grid_keeps_every_genes_expression_rows(ds):

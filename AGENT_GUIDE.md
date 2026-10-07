@@ -103,7 +103,7 @@ splice-assay probe DATA --gene GENE [--gtf annotation.gtf.gz] [--na-value missin
 | `report.md` | Start here: what was run, how many p < 0.05 chance would give, and the ranked events with links to pages ([how to read a page](docs/reading-results.md)) |
 | `events.csv` | One row per event (see below) |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted (`adj_*`), and BH q within each gene |
-| `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot (a `*` instead when q < 0.05), group-hit frame; the host gene's expression in its own row (with an expression table) |
+| `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot (a `*` instead when q < 0.05), group-hit frame, pale hatching for imprecise fits (95% CI over 8-fold, or under 20 events); at the right of each row its hits against chance and their directions; the host gene's expression in its own row (with an expression table) |
 | `pages/NNN_EVENT.png` | One assay page per ranked, measurable event, at most 30 (`--max-pages N`) |
 | `pages/GENE_expression.png` | The host gene's expression page (with an expression table) |
 | `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model and its probed events observed in enough samples, 5′ to 3′, beside their overview cells (and, with `--correlation`, the median ρ between them) |
@@ -141,8 +141,10 @@ under "Notes on the survival tests". Each is a reason for caution, not a failed 
   checks the IQR). It is common for low-inclusion events (retained introns, PSI near 0). Say so when reporting.
 - **`stage I merged into II (…)`:** a level too rare to estimate joined its neighbour, so the reference may read
   "I–II".
-- **`unstable: …`:** a covariate term with se > 3. A term penalized by `--ridge` keeps its se per SD or per level
-  below 1/√λ (1 at the default), so a sparse level goes unflagged there.
+- **`unstable: …`:** a term with se > 3 per SD (or IQR) or per level (a 95% CI over 100,000-fold). For a covariate
+  it is usually a sparse level. **`unstable: PSI`** means the fit itself has broken down: do not quote its HR or p
+  (the report lists these fits). A term penalized by `--ridge` keeps its se per SD or per level below 1/√λ (1 at the
+  default), so it goes unflagged there.
 - **`non-proportional hazards: PSI (p …)`** (model header) **or `non-proportional hazards (p …)`** (KM header):
   the Schoenfeld test says the hazard ratio changes over follow-up, so the HR or log-rank result is an average.
   Look at the KM curves; crossing curves are the usual cause. `cells.csv` holds every test's p (`ph_p`,
@@ -212,7 +214,9 @@ annotated transcript matched well; nothing is shown then.
   (one pale column runs through both), may be one change counted several times. The map leaves out events whose PSI
   is observed in under half of every cohort's survival samples (its subtitle counts them).
 - **Where signal lives.** Open `overview.png`: a whole column of dots means a cohort-wide effect (many events
-  associated in one cancer), which is less specific to the event.
+  associated in one cancer), which is less specific to the event. Read each row's counts at the right (hits against
+  chance, directions) before its darkest cell. Pale, hatched cells are imprecise (95% CI over 8-fold, or under 20
+  events): never report their HR as an effect size, and a whole hatched column is a cohort with few deaths.
 - **Duplicate events.** rMATS often lists the same exon several times with different flanking exons, and their PSI
   values are correlated. Count them as one piece of evidence, not several (`--correlation` measures it).
 - **Coverage.** Low coverage (`frac_obs` in cells.csv) makes an event noisy even when it passes the gates.
@@ -233,7 +237,9 @@ splice-assay panel DATA --event EVENT_ID --out OUT [--cohort A --cohort B ...] [
   and model, and the forest of every cohort sits below.
 - **What the page says about the event.** Under the title, one line per event gives what it is (type, exon or
   intron, 1-based coordinates, length, strand) and what its value measures. Check it against the event you meant.
-- **KM split.** The median by default; the KM header says where it fell ("split at median PSI 0.7705"). Use
+- **KM split.** The median by default; the KM header says where it fell ("split at median PSI 0.7705"). When the
+  median is the highest value (PSI 1 in more than half the patients) the arms are at the median vs below it, and the
+  header adds "(high: at the median)". Use
   `--km-split mean` or `--km-split 0.3` (a set value) only for a stated reason, and say so when reporting.
 - **Expression page.** `panel` also writes `<GENE>_expression_<cohorts>_<endpoint>` for the same cohorts
   (`--no-gex` leaves it out).

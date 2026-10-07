@@ -25,6 +25,10 @@ def test_single_event_panel(ds, results, gtf_path, tmp_path):
     assert set(t[t.panel.eq("all_samples")].tag) == {"SYN1:SE:1|COH1", "SYN1:SE:1|COH2"}
     assert set(t[t.panel.eq("pairs")].tag) == {"SYN1:SE:1|COH1"}
     assert p.provenance["inputs_sha256"]["psi"] and p.provenance["settings"]["min_pairs"] == 10
+    assert "Model term p < 0.05" not in [x.get_text() for x in p.figure.texts]   # no model rows, no squares
+    band = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST, results=results, detail=True)
+    texts = [x.get_text() for x in band.figure.texts]
+    assert {"Model term p < 0.05", "p ≥ 0.05"} <= set(texts) and not any("Filled:" in x for x in texts)
 
 
 def test_two_events_with_highlight(ds, results, gtf_path):
@@ -78,6 +82,23 @@ def test_km_panel_values(ds, results):
     first = p.table[p.table.panel.eq("km_at_risk") & p.table.time_years.eq(0)]
     assert first.n_at_risk.sum() == sv.km_n
     assert np.all(np.diff(p.table[p.table.panel.eq("km_curve") & p.table.arm.eq("Low PSI")].surv) <= 1e-12)
+
+
+def test_km_split_at_a_median_that_is_the_highest_psi(tables):
+    """Most COH1 tumours at PSI 1: the page draws the arms the statistics test, at the median vs below it, and says
+    so in the KM header."""
+    psi = tables["psi"].copy()
+    rows = psi.event_id.eq("SYN1:SE:1") & psi.sample_id.str.startswith("COH1-") & psi.sample_id.str.endswith("-T")
+    up = np.random.default_rng(3).uniform(size=rows.sum()) < 0.6
+    psi.loc[rows, "psi"] = np.where(up, 1.0, psi.loc[rows, "psi"].clip(upper=0.97))
+    ds = sa.Dataset.from_tables(**{**tables, "psi": psi})
+    res = sa.analyze(ds)
+    sv = res.survival.set_index(["event_id", "cohort", "endpoint"]).loc[("SYN1:SE:1", "COH1", "OS")]
+    assert sv.cutoff == 1.0 and sv.km_ties_high and sv.km_status == "tested"
+    p = sa.event_panel(ds, "SYN1:SE:1", "COH1", "OS", settings=FAST, results=res)
+    arms = p.table[p.table.panel.eq("km_arms")].iloc[0]
+    assert arms.n_high == sv.n_high > 0 and arms.events_low == sv.events_low   # the OS patients among them
+    assert any("(high: at the median)" in t.get_text() for t in p.figure.findobj(lambda o: hasattr(o, "get_text")))
 
 
 def test_cox_model_figure(ds, tmp_path):
@@ -301,7 +322,7 @@ def test_q_marks(ds, tmp_path):
                 log=lambda *_: None)
     fig = overview(res.cells, res.events, "OS", s)
     assert any(t.get_text() == "*" for a in fig.axes for t in a.texts)
-    assert "*: q < 0.05" in " ".join(t.get_text() for t in fig.texts)
+    assert "q < 0.05" in [t.get_text() for t in fig.texts]                    # the key, beside a * sample
 
 
 @pytest.mark.parametrize("unit", ["sd", "iqr"])

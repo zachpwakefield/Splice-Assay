@@ -310,7 +310,7 @@ It writes:
 | `report.md` | What was run, how many p < 0.05 chance would give, and the ranked events with links to their pages |
 | `events.csv` | One row per event, ranked: significant cohorts (adjusted, base, with directions), group hits, best cohort |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted, with BH q values within each gene |
-| `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame; with an expression table, the host gene's own expression in a row of its own |
+| `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame, a key to the marks; imprecise fits (95% CI over 8-fold, or under 20 events) pale and hatched; at the right of each row its hits against chance and their directions; with an expression table, the host gene's own expression in a row of its own |
 | `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model (with `--gtf`) and its probed events observed in enough samples, 5′ to 3′, each beside its cells of the overview; with `--correlation`, the median ρ between its events |
 | `pages/`, `probe.pdf` | One assay page per ranked, measurable event, at most 30 (`--max-pages N`), then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF, after the overview and the gene maps (and the correlation figure) |
 | `correlations.csv`, `correlation.png` | With `--correlation`: Spearman ρ per cohort of each event with its host gene's expression and with the gene's other events (see Correlation below) |
@@ -337,9 +337,17 @@ either way.
 More than 6 cohorts are split over balanced pages (`_p1`, `_p2`, …, "page 1 of 3" in the title), each with the
 full forest. Change the split with the `cohorts_per_page` setting (0 = one page).
 
+**The overview** is the place to choose what to read first.
+- **Imprecise cells.** A cell whose fit is imprecise (95% CI over 8-fold, or fewer than 20 events) is drawn pale
+  and hatched, because small cohorts and PSI that barely varies give the most extreme HRs; its dot still marks
+  p < 0.05.
+- **Row counts.** At the right of each row are its cohorts with p < 0.05 of those tested, what chance would give,
+  and the hits' directions.
+- **Keys.** Each probe figure draws its marks in a key beside the colour bar.
+
 **Gene maps** show where on the gene the signal sits. Each event is drawn as on its page, 5′ to 3′ under the gene's
 collapsed model, with pale columns carrying the gene's exons down through the rows, so events that share an exon line
-up. Long introns are drawn shortened. Beside each row are its overview cells, and with `--correlation` a triangle gives
+up; the key under the gene shows the drawing and the cells' marks. Long introns are drawn shortened. Beside each row are its overview cells, and with `--correlation` a triangle gives
 the median ρ between each two events. Events observed in under half of every cohort's survival samples are not drawn
 (`--min-observed FRAC`; in TCGA data most of a gene's annotated events can be nearly absent); the subtitle counts them.
 
@@ -381,6 +389,7 @@ annotation, and checks against SpliceImpactR.
 | KM split | median | `--km-split mean` or `--km-split 0.5`; `--km-split-expression` for expression |
 | HIT-index events | left out of `analyze` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
 | q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
+| Imprecise cells (probe figures) | pale and hatched when the 95% CI spans over 8-fold or the fit has under 20 events | settings `imprecise_ci_ratio` (0 = never) |
 | PSI hazard ratio | per SD of the cohort's PSI | `--hr-unit iqr` (per IQR) |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | Pages (probe) | the best-ranked measurable events, at most 30 | `--max-pages N` |
@@ -409,7 +418,9 @@ annotation, and checks against SpliceImpactR.
   - fewer than 10 events per model term (an overfit risk);
   - a PSI SD (or IQR, with `--hr-unit iqr`) below 0.05 in the fit cohort, so the HR covers a few PSI points;
   - non-proportional hazards: a term's Schoenfeld test, or the KM split's, has p < 0.05, so the effect changes over
-    follow-up. Pages mark such tests with † after the p (KM, model rows) or the CI (forest).
+    follow-up. Pages mark such tests with † after the p (KM, model rows) or the CI (forest);
+  - an unstable term: its SE above 3 per SD (or IQR) or per level, a 95% CI over 100,000-fold. For PSI itself
+    ("unstable: PSI") the fit has broken down, and the probe report lists it.
 
   Settings `cox_low_power_events`, `cox_events_per_term`, `narrow_psi_below`, `narrow_psi_measure` (`sd` or `iqr`)
   and `ph_note_below` control them.

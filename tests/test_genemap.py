@@ -22,6 +22,32 @@ def probed(ds):
     return cells, rank_events(cells, ds, 0.05)
 
 
+def test_imprecise_cells_and_the_keys():
+    """A survival cell is drawn pale and hatched when its 95% CI spans more than imprecise_ci_ratio or its fit is low
+    power (never with the setting at 0, or without a CI); the keys list each mark with its rule."""
+    from splice_assay.plot import grid as G
+    s = sa.Settings()
+    assert G.imprecise(0.2, 1.7, False, s) is True and G.imprecise(1.1, 4.4, False, s) is False
+    assert G.imprecise(1.1, 4.4, True, s) and G.imprecise(0.5, np.inf, False, s)
+    assert not G.imprecise(np.nan, np.nan, False, s) and not G.imprecise(None, None, "False", s)
+    assert not G.imprecise(0.01, 100, True, s.replace(imprecise_ci_ratio=0))
+    with pytest.raises(ValueError, match="imprecise_ci_ratio"):
+        sa.Settings(imprecise_ci_ratio=0.5)
+    row = pd.Series(dict(adj_cox_status="tested", adj_hr_per_sd=0.16, adj_cox_p=0.027, adj_cox_q=0.32,
+                         adj_ci_low_sd=0.03, adj_ci_high_sd=0.81, adj_cox_low_power=True, cox_status="tested"))
+    shown = G.shown_fit(row, s)
+    assert shown.tested and shown.hr == 0.16 and shown.imprecise
+    assert G.hr_face(0.16, True, True, G.hr_scale()) != G.hr_face(0.16, True, False, G.hr_scale())
+    labels = [label for _, label in G.hr_key(s)]
+    assert labels[:2] == ["p < 0.05", "p < 0.01"] and "group hit" in labels and "not tested" in labels
+    assert "imprecise: 95% CI over 8-fold, or under 20 events" in labels
+    assert "imprecise" not in " ".join(label for _, label in G.hr_key(s.replace(imprecise_ci_ratio=0)))
+    assert "imprecise: 95% CI over 8-fold" in [label for _, label in G.hr_key(s.replace(cox_low_power_events=0))]
+    strict = [(spec.get("dot"), label) for spec, label in G.hr_key(s.replace(alpha=0.01)) if spec.get("dot")]
+    assert strict == [("large", "p < 0.01")]                                      # every dot is large then
+    assert G.key_rows([(dict(), "a"), None, (dict(), "b")], 9.0) == [[0], [2]]   # None starts a row
+
+
 def test_squeeze_shortens_long_introns_and_the_longest_exons():
     knots, drawn, note = squeeze([(0, 100), (5100, 5200)], 0, 5200)
     assert note == "long introns shortened, exons to scale" and list(knots) == [0, 100, 5100, 5200]
@@ -69,10 +95,15 @@ def test_gene_map_rows_and_layers(ds, probed, gtf_path):
     labels = [ds.events.at[e, "label"] for e in order]
     assert sorted(labels, key=lambda lab: -y[lab]) == labels                      # rows top to bottom, 5' to 3'
     assert "ρ between events" not in texts                                        # no correlations given
+    assert {"exon", "region measured by PSI (colour: event type)", "junction of the PSI form",
+            "junction of the other form", "the gene's exon, down the rows", "p < 0.05", "group hit",
+            "not tested"} <= set(texts)                                                           # the key
+    assert "|ρ| ≥ 0.7" not in texts
     from splice_assay.correlation import correlations
     c = correlations(ds, events=order)
     with_c = _texts(gene_map(ds, "SYN1", ranked, cells, "OS", FAST, gtf=str(gtf_path), corr=c))
     assert {"ρ between events", "Spearman ρ, median of cohorts"} <= set(with_c) and "expr." not in with_c
+    assert "|ρ| ≥ 0.7" in with_c and "pale columns" not in " ".join(with_c)
     pairs = c[c.kind.eq("event") & c.corr_status.eq("tested")]
     from splice_assay.plot.grid import rho_text
     for med in pairs.groupby(["event_id", "partner"]).rho.median():

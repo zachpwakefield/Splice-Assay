@@ -6,8 +6,10 @@ Coverage gate     PSI observed in >= coverage_frac of the survival samples and >
                   from the modal value; otherwise neither test runs ('coverage_gate').
 Endpoint cohort   survival samples whose patient has a valid row for the endpoint and an observed PSI.
 KM                The cut is the median of the survival samples' values (Settings.km_split: median, mean or a
-                  number; km_split_expression for expression). PSI <= cut is the low arm. Needs km_min_group
-                  patients per arm and km_min_events events. The log-rank HR is (O/E high) / (O/E low).
+                  number; km_split_expression for expression). PSI <= cut is the low arm, except when the median
+                  is the highest value (e.g. PSI 1 in more than half the patients): then PSI at the cut is the high
+                  arm and PSI below it the low arm (km_ties_high). Needs km_min_group patients per arm and
+                  km_min_events events. The log-rank HR is (O/E high) / (O/E low).
 Cox               h(t) = h0(t) exp(b * PSI/0.10 + g * z(host expression) + covariates), Efron ties (lifelines); no
                   penalty unless Settings.cox_ridge (ridge_penalizer: lambda/2 * beta^2 per penalized term, per SD or
                   per category level; the model's name says so). Host expression enters when an expression table
@@ -204,16 +206,32 @@ def low_psi_variance(x, s: Settings) -> bool:
     return bool(len(x) >= 2 and np.std(x, ddof=1) < s.low_psi_variance_sd)
 
 
-def km_cut(obs: np.ndarray, rule) -> tuple[float, str]:
-    """The KM split of the observed values and how it was chosen: 'median', 'mean', or 'set' (a number given in
-    Settings.km_split). The high arm is above the split."""
+def km_cut(obs: np.ndarray, rule) -> tuple[float, str, bool]:
+    """The KM split of the observed values, how it was chosen ('median', 'mean', or 'set': a number given in
+    Settings.km_split), and whether the values at the split form the high arm (km_high).
+
+    The high arm is above the split, except when the median is the highest value (PSI 1 in more than half the
+    patients, say): no value is above it, so the arms are the values at the median and those below it. A median at
+    the lowest value (PSI 0) needs no exception: the values above it and those at it."""
     if not len(obs):
-        return NAN, ""
+        return NAN, "", False
     if rule == "median":
-        return float(np.median(obs)), "median"
+        cut = float(np.median(obs))
+        return cut, "median", bool(not (obs > cut).any())
     if rule == "mean":
-        return float(np.mean(obs)), "mean"
-    return float(rule), "set"
+        return float(np.mean(obs)), "mean", False
+    return float(rule), "set", False
+
+
+def km_high(x, cut: float, ties_high: bool) -> np.ndarray:
+    """The high arm of a KM split (see km_cut): values above the cut, or at and above it when `ties_high`."""
+    x = np.asarray(x, float)
+    return x >= cut if ties_high else x > cut
+
+
+def ties_high(row) -> bool:
+    """km_ties_high of a survival row, as computed or as read back from a table (missing: False)."""
+    return str(row.get("km_ties_high", False)).strip().lower() in ("true", "1", "1.0")
 
 
 def km_gate(high: np.ndarray, e: np.ndarray, s: Settings) -> bool:
@@ -445,9 +463,9 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     use_expr = host_base is not None and model.expression
     cv = coverage(x_base, s.round_decimals)
     obs = x_base[np.isfinite(x_base)]
-    cut, how = km_cut(obs, s.km_split)
+    cut, how, tie = km_cut(obs, s.km_split)
     r = dict(n_survival=len(x_base), n_obs=cv["n_obs"], frac_obs=cv["frac_obs"], off_modal=cv["off_modal"],
-             modal_share=cv["modal_share"], cutoff=cut, km_split=how,
+             modal_share=cv["modal_share"], cutoff=cut, km_split=how, km_ties_high=tie,
              eligible=bool(cv["frac_obs"] >= s.coverage_frac and cv["off_modal"] >= s.min_off_modal),
              n_endpoint=len(ep_pos), cox_model=model.describe(use_expr).replace("PSI", quantity, 1))
     if not r["eligible"]:
@@ -455,7 +473,7 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     keep = np.isfinite(x_base[ep_pos])
     idx = ep_pos[keep]
     t, e, x = np.asarray(time, float)[keep], np.asarray(event, int)[keep], x_base[idx]
-    high = x > r["cutoff"]
+    high = km_high(x, r["cutoff"], tie)
     low_var = low_psi_variance(x, s)
     # ---------------------------------------------------------------- KM
     r.update(km_n=len(x), n_low=int((~high).sum()), n_high=int(high.sum()), events_low=int(e[~high].sum()),
@@ -558,12 +576,15 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
                               ph_p=ph.get(m["column"], NAN)))
         if m["kind"] == "psi":                              # the tested term per IQR (or per SD: psi_hr_unit)
             u, kk = (("iqr", k) if s.psi_hr_unit == "iqr" else ("sd", k_sd))
+            if sei * (kk if kk > 0 else k_sd) > 3:          # the tested term itself: its HR means little (an IQR of
+                unstable.append(quantity)                   # 0, many tied values: judged per SD)
             terms.append(dict(term=quantity, kind=f"psi_{u}", level="", reference="",
                               unit=f"{u.upper()} ({r[f'psi_{u}']:.3g} {unit})", coef=c * kk, se=sei * kk,
                               hr=r[f"hr_per_{u}"], ci_low=r[f"ci_low_{u}"], ci_high=r[f"ci_high_{u}"], p=p,
                               ph_p=ph.get(m["column"], NAN)))
         elif sei > 3:                                       # a sparse level or a nearly separated covariate
             unstable.append(f"{m['term']}{' ' + m['level'] if m['level'] else ''}")
+    r["psi_unstable"] = quantity in unstable            # its SE per SD (or IQR) above 3: a 95% CI over 100,000-fold
     flags = _fit_flags(r, len(meta), s, r["psi_iqr"] if s.narrow_measure == "iqr" else r["psi_sd"], quantity)
     flags += _ph_note(fit, meta, s)
     r["cox_notes"] = "; ".join(x for x in [r.get("cox_notes", "")] + flags
@@ -576,8 +597,9 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     """KM and Cox statistics of host-gene expression itself in one cohort for one endpoint, and the Cox terms.
 
     The same rules as `survival_cell`, with expression in place of PSI: the coverage gate on the survival samples, a
-    median split (expression <= cut is the low arm), and Cox on z(expression) plus the model's clinical covariates and
-    strata (`model.expression` is ignored). The HR is per SD of expression in the fit cohort.
+    median split (as km_cut: expression <= cut is the low arm unless the median is the highest value), and Cox on
+    z(expression) plus the model's clinical covariates and strata (`model.expression` is ignored). The HR is per SD
+    of expression in the fit cohort.
     """
     model = model or CoxModel()
     g_base = np.asarray(g_base, float)
@@ -585,9 +607,9 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     obs = g_base[np.isfinite(g_base)]
     describe = " + ".join(["expression"] + list(model.covariates)) + (
         f"; strata: {', '.join(model.strata)}" if model.strata else "")
-    cut, how = km_cut(obs, s.km_split_expression)
+    cut, how, tie = km_cut(obs, s.km_split_expression)
     r = dict(n_survival=len(g_base), n_obs=cv["n_obs"], frac_obs=cv["frac_obs"], off_modal=cv["off_modal"],
-             modal_share=cv["modal_share"], cutoff=cut, km_split=how,
+             modal_share=cv["modal_share"], cutoff=cut, km_split=how, km_ties_high=tie,
              eligible=bool(cv["frac_obs"] >= s.coverage_frac and cv["off_modal"] >= s.min_off_modal),
              n_endpoint=len(ep_pos), cox_model=describe)
     if not r["eligible"]:
@@ -595,7 +617,7 @@ def expression_cell(g_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, ev
     keep = np.isfinite(g_base[ep_pos])
     idx = ep_pos[keep]
     t, e, x = np.asarray(time, float)[keep], np.asarray(event, int)[keep], g_base[idx]
-    high = x > r["cutoff"]
+    high = km_high(x, r["cutoff"], tie)
     flat = len(x) < 2 or not np.ptp(np.round(x, s.round_decimals)) > 0
     # ---------------------------------------------------------------- KM
     r.update(km_n=len(x), n_low=int((~high).sum()), n_high=int(high.sum()), events_low=int(e[~high].sum()),

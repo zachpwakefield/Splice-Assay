@@ -20,7 +20,7 @@ from ..config import Settings
 from ..dataset import Dataset, InputError, read_table
 from .. import events as EV
 from ..events import geometry
-from ..stats.survival import CoxModel, ridge_text
+from ..stats.survival import CoxModel, km_high, ridge_text, ties_high
 from ..stats.tissue import patient_values
 from . import forest as F
 from . import km as K
@@ -28,7 +28,7 @@ from . import protein as PR
 from . import schematic as SCH
 from . import style as S
 from . import tissue as T
-from .model import MODEL_NOTE, _range, display_rows, draw_terms, model_terms, not_fitted, terms_columns
+from .model import SCALE_NOTE, _range, display_rows, draw_terms, model_terms, not_fitted, terms_columns
 from .panel_common import ENDPOINT_NAMES, Panel, model_mismatch, safe_name
 
 KM_MESSAGE = {"coverage_gate": "PSI too sparse in this cohort\n(coverage gate)",
@@ -362,6 +362,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     band_text = highlight_legend or ((f"{highlight_title} cell (letter: {highlight_title.lower()})" if highlight_title
                                       else "Highlighted cell") if marks else "Cohort shown at left")
     second += [("hs", f"{cox_name} p < {s.alpha:g}"), ("hn", f"{cox_name} p ≥ {s.alpha:g}"), ("band", band_text)]
+    if band is not None and any(c["disp"] for c in band["cells"]):     # the model rows' other terms
+        second += [("ts", f"Model term p < {s.alpha:g}"), ("tn", f"p ≥ {s.alpha:g}")]
     if _q_marked(focus, fcoh, tn, sv, band, s):
         second.append(("q", f"q < {s.q_mark_below:g} (Benjamini–Hochberg)"))
     if _ph_marked(focus, fcoh, sv, band, s):
@@ -488,7 +490,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         if band and not stacked:
             rows += _draw_band(fig, W, H, y_main + main_h, band, s, n_ev)
         elif band:
-            fig.text(fx(0.12), fy(y_main + main_h + 0.02), "Cox models: " + MODEL_NOTE.format(alpha=s.alpha),
+            fig.text(fx(0.12), fy(y_main + main_h + 0.02), "Cox models: " + SCALE_NOTE,
                      fontsize=5.6, color=S.MUTED, ha="left", va="top")
         # ------------------------------------------------------------------ legend
         for i, line in enumerate(q_lines):                 # the q footnote, at the very bottom
@@ -530,9 +532,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                                  facecolor=mark_colors.get(lab0, S.HIGHLIGHT.get(
                                                      lab0, S.HIGHLIGHT_DEFAULT))))
                 else:
-                    mk = "o" if kind in ("pd", "ud") else "D"
+                    mk = "o" if kind in ("pd", "ud") else "s" if kind in ("ts", "tn") else "D"
                     fig.add_artist(Line2D([fx(x + 0.08)], [yy], marker=mk, ms=3.6 if mk == "o" else 3.2, ls="",
-                                          markerfacecolor=S.INK if kind in ("pd", "hs") else "white",
+                                          markerfacecolor=S.INK if kind in ("pd", "hs", "ts") else "white",
                                           markeredgecolor=S.INK, mew=0.7))
                 fig.text(fx(x + 0.21), yy, text, fontsize=6, color=S.INK2, ha="left", va="center")
                 x += 0.21 + S.text_width(text, 6) + 0.2
@@ -733,7 +735,7 @@ def _draw_band(fig, W, H, y0, band, s, n_ev) -> list[dict]:
                            tag=tag, xlim=band["xlim"], cols=band["cols"])
         rows += [dict(panel="cox_detail", cox_model=_cell_model_text(r, band), cox_n=int(r.cox_n),
                       cox_events=int(r.cox_events), **d) for d in drawn]
-    fig.text(fx(0.12), fy(y0 + band["nline"] * band["line_h"] + 0.02), MODEL_NOTE.format(alpha=s.alpha),
+    fig.text(fx(0.12), fy(y0 + band["nline"] * band["line_h"] + 0.02), "Cox models: " + SCALE_NOTE,
              fontsize=5.6, color=S.MUTED, ha="left", va="top")
     return rows
 
@@ -854,6 +856,8 @@ def expression_panel(ds: Dataset, gene: str, cohorts, endpoint: str, *, settings
     if has_ref:
         second += [("split", "KM split"), ("pd", "Paired Δ"), ("ud", "Unpaired Δ")]
     second += [("hs", f"Cox p < {s.alpha:g}"), ("hn", f"Cox p ≥ {s.alpha:g}"), ("band", "Cohort drawn below")]
+    if gx and gx["cells"]:                                  # the model rows' other terms
+        second += [("ts", f"Model term p < {s.alpha:g}"), ("tn", f"p ≥ {s.alpha:g}")]
     low = (lambda v: s.ph_note_below > 0 and v is not None and np.isfinite(float(v)) and float(v) < s.ph_note_below)
     if any(low(r[0]["ph_p"]) for r in recs.values()) or (gx and any(
             low(_get(cell["v"], "km_ph_p")) or any(d["r"] is not None and low(getattr(d["r"], "ph_p", None))
@@ -936,9 +940,9 @@ def expression_panel(ds: Dataset, gene: str, cohorts, endpoint: str, *, settings
                 elif kind == "low":
                     fig.text(fx(x + 0.08), yy, F.LOW_MARK, fontsize=7, color=S.INK, ha="center", va="center")
                 else:
-                    mk = "o" if kind in ("pd", "ud") else "D"
+                    mk = "o" if kind in ("pd", "ud") else "s" if kind in ("ts", "tn") else "D"
                     fig.add_artist(Line2D([fx(x + 0.08)], [yy], marker=mk, ms=3.6 if mk == "o" else 3.2, ls="",
-                                          markerfacecolor=S.INK if kind in ("pd", "hs") else "white",
+                                          markerfacecolor=S.INK if kind in ("pd", "hs", "ts") else "white",
                                           markeredgecolor=S.INK, mew=0.7))
                 fig.text(fx(x + 0.21), yy, text, fontsize=6, color=S.INK2, ha="left", va="center")
                 x += 0.21 + S.text_width(text, 6) + 0.2
@@ -1091,7 +1095,7 @@ def _km_view(fig, ax, ds, e, c, v, v_, endpoint, ylabel, s, rows, printed, tag, 
     ok = np.isfinite(x)
     pid = base.patient_id.to_numpy()[ok]
     x, t, ev = x[ok], sv.time.reindex(pid).to_numpy(float), sv.event.reindex(pid).to_numpy(int)
-    high = x > v_["cutoff"]                                              # PSI <= cutoff = low arm
+    high = km_high(x, v_["cutoff"], ties_high(v_))                       # above the cutoff, or at it (see km_cut)
     _check(high.sum() == v_["n_high"] and (~high).sum() == v_["n_low"], "KM arms", e, c)
     _check(ev[high].sum() == v_["events_high"] and ev[~high].sum() == v_["events_low"], "KM events", e, c)
     K.draw(fig, ax, s.years(t), ev, high, v_, ylabel, rows, tag, s, what=what)

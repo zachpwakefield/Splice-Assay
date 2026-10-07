@@ -15,7 +15,8 @@ import numpy as np
 TIME_UNITS = {"days": None, "months": 12.0, "years": 1.0}
 RIDGE_SCOPES = ("none", "clinical", "molecular", "all")
 DRAWING = {"km_max_years", "km_tick_years", "gene_model_min_frac", "nested_biotypes", "exclude_transcript_types",
-           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below"}
+           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below",
+           "imprecise_ci_ratio"}
 
 
 def _split_rule(v, name: str):
@@ -48,7 +49,8 @@ class Settings:
     coverage_frac: float = 0.5        # PSI observed in at least this fraction of the cohort's survival samples
     min_off_modal: int = 10           # ... and at least this many observed values away from the modal value
     km_split: object = "median"       # the KM split of an event's values (PSI or HIT index): "median", "mean" or a
-                                      # number; the high arm is above it
+                                      # number; the high arm is above it (at it, when the median is the highest
+                                      # value: stats.survival.km_cut)
     km_split_expression: object = "median"  # the same for host-gene expression (a number is in expression units)
     km_min_group: int = 10            # log-rank: at least this many patients in each arm
     km_min_events: int = 10           # ... and at least this many events
@@ -107,6 +109,9 @@ class Settings:
     cohorts_per_page: int = 6         # more cohorts on a page are split into balanced pages of at most this many,
                                       # each with the full forest (0 = one page)
     q_mark_below: float = 0.05        # a q below this is marked * on the pages, beside the p-based fill (0 = never)
+    imprecise_ci_ratio: float = 8.0   # the probe's overview and gene maps draw a survival cell pale and hatched when
+                                      # its 95% CI spans more than this ratio (high / low) or its fit is low power,
+                                      # so a large but unreliable HR does not stand out (0 = never)
     formats: tuple = ("svg", "pdf", "png")  # the file types of each figure (any of the three; probe.pdf
                                       # is always written)
     dpi: int = 400                    # resolution of the PNG files
@@ -129,6 +134,8 @@ class Settings:
                      "narrow_psi_below", "ph_note_below", "hit_min_abs_delta", "q_mark_below"):
             if getattr(self, name) < 0:
                 raise ValueError(f"Settings.{name} must be >= 0")
+        if self.imprecise_ci_ratio != 0 and not self.imprecise_ci_ratio > 1:
+            raise ValueError("Settings.imprecise_ci_ratio must be 0 (never) or above 1")
         if self.cox_ridge not in RIDGE_SCOPES:
             raise ValueError(f"Settings.cox_ridge must be one of {', '.join(RIDGE_SCOPES)}")
         if self.cox_min_events_per_term < 0:
