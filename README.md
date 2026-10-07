@@ -85,7 +85,7 @@ splice-assay validate demo/data                # check your tables; per-cohort c
 export SPLICE_ASSAY_GTF=demo/data/annotation.gtf
 export SPLICE_ASSAY_PROTEINS=demo/proteins     # optional: the suggested protein change on every page
 
-# not sure where to look? probe every event of a gene in every cohort: ranked, one page per event
+# not sure where to look? probe every event of a gene in every cohort: ranked, a page per top event
 splice-assay probe demo/data --gene SYN1       # -> probe_SYN1_OS/report.md, probe.pdf, pages/
 splice-assay probe demo/data --gene SYN3       # HITindex events: alternative first/last exons (AFE, ALE)
 splice-assay probe demo/data --gene SYN3 --include-hit   # ... and the HIT index of each exon (left out by default)
@@ -140,6 +140,12 @@ How they are read:
 
 Each part can instead have its own table. A separate table takes precedence over the same columns in `samples` or
 `psi`, and `validate` says where each table came from. `splice-assay example DIR --separate` writes this form.
+
+`--table NAME=PATH` reads one table from a file elsewhere instead of the folder, for example
+`--table clinical=/shared/clinical.tsv`; it replaces the folder's table of that name. NAME is one of the tables above
+(`samples`, `psi`, `events`, `survival`, `pairs`, `expression`, `clinical`; any other is an error), and a relative
+PATH is read from the current directory, not the data folder. Repeat it for more tables. It works in either form,
+on `validate`, `analyze`, `panel`, `panels`, `probe` and `cox`.
 
 | Table | Required columns | Optional columns |
 |---|---|---|
@@ -251,9 +257,17 @@ splice-assay import-rmats rmats_out/ --b1 b1.txt --b2 b2.txt --counting JCEC --o
 ```
 
 This writes one `psi.csv`: the event columns (with geometry), then the PSI values from `IncLevel1`/`IncLevel2`, one
-column per sample, named after the BAM files. `--separate` writes `events.csv` and a long `psi.csv` instead. Add
-`samples.csv`, with the survival and clinical columns, to the same folder. For MXE events, PSI is taken to measure the
-transcript-upstream exon; see `splice_assay.rmats` and check one known event in your data.
+column per sample. Add `samples.csv`, with the survival and clinical columns, to the same folder.
+- **Counts.** `--counting JCEC` (junction and exon-body reads, the default) or `JC` (junction reads only) picks the
+  rMATS files that are read.
+- **Sample names.** The columns are named after the BAM files, or after `--names1` and `--names2` (comma-separated,
+  in the order of `b1.txt` and `b2.txt`).
+- **Event IDs.** `TYPE:ID`, with rMATS's ID within each type. `--prefix` puts text in front (`--prefix run2_` gives
+  `run2_SE:17`), and `--types SE,RI` imports only those types.
+- **Layout.** `--separate` writes `events.csv` and a long `psi.csv` instead. `--append` adds the events to the tables
+  already in `--out`, as for HITindex below.
+- **MXE.** PSI is taken to measure the transcript-upstream exon, as in the data this was checked on (FGFR1–3
+  IIIb/IIIc). Check one known event in your data; `--mxe-psi-exon first_listed` takes the exon rMATS lists first.
 
 ### From HITindex
 
@@ -265,7 +279,8 @@ Each matrix has one row per exon and one column per sample. The first column is 
 `gene_id;chrom:start-end;afe` (or `ale`, `hit`), in its 1-based coordinates. A matrix assembled from HITindex's
 per-sample outputs looks like this; `splice-assay example` writes three in `demo/hitindex/`.
 - **The GTF** gives each gene's strand and symbol, which the IDs lack.
-- **Events** are named `GENE:AFE:0001`, numbered per gene and type from 5′ to 3′. `source_id` keeps the HITindex ID.
+- **Events** are named `GENE:AFE:0001`, numbered per gene and type from 5′ to 3′; `--prefix` puts text in front.
+  `source_id` keeps the HITindex ID.
 - **`--gene`** keeps the listed genes (symbols or Ensembl IDs). The matrices are streamed, so a large file costs
   little memory.
 - **`--append`** adds the events to the tables already in the folder (for example after `import-rmats`), in the
@@ -297,7 +312,7 @@ It writes:
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted, with BH q values within each gene |
 | `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame; with an expression table, the host gene's own expression in a row of its own |
 | `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model (with `--gtf`) and its probed events observed in enough samples, 5′ to 3′, each beside its cells of the overview; with `--correlation`, the median ρ between its events |
-| `pages/`, `probe.pdf` | One assay page per ranked event, then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF, after the overview and the gene maps (and the correlation figure) |
+| `pages/`, `probe.pdf` | One assay page per ranked, measurable event, at most 30 (`--max-pages N`), then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF, after the overview and the gene maps (and the correlation figure) |
 | `correlations.csv`, `correlation.png` | With `--correlation`: Spearman ρ per cohort of each event with its host gene's expression and with the gene's other events (see Correlation below) |
 | `agent_prompt.md` | What an agent needs to write a narrative of the probe: instructions, the rules for reading it, the report and the best-ranked events' notable cohorts (see Agent summary below) |
 
@@ -314,6 +329,10 @@ Each page shows that event's most promising cohorts (`--top`, default 3; `--top 
 test, one row each) and every cohort in the forest. The best cohort and the page's cohorts are those with Cox
 p < 0.05 in a fit that is not low power, then in a low-power fit, then the other fits (those not low power first),
 each by adjusted Cox p.
+
+Pages go to the best-ranked measurable events, at most 30; an event among them without coordinates to draw gets none.
+`--max-pages N` draws more or fewer, and a large N draws every one. `events.csv` and `cells.csv` hold every event
+either way.
 
 More than 6 cohorts are split over balanced pages (`_p1`, `_p2`, …, "page 1 of 3" in the title), each with the
 full forest. Change the split with the `cohorts_per_page` setting (0 = one page).
@@ -340,8 +359,11 @@ export SPLICE_ASSAY_PROTEINS=protein_cache/                          # or --prot
 splice-assay proteins data/ --gene FNBP1      # e.g. "inclusion adds 61 aa in frame (residues 330–390 of FNBP1-202)"
 ```
 
-These are suggestions read from annotation; an event without a good match is not shown. The example writes a small
-synthetic cache (`demo/proteins/`). [docs/annotation-cache.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/annotation-cache.md) shows how to build the real
+`protein-cache` runs R once (any version, no packages; `--rscript PATH` when `Rscript` is not on the
+PATH).
+
+The protein changes are suggestions read from annotation; an event without a good match is not shown. The example
+writes a small synthetic cache (`demo/proteins/`). [docs/annotation-cache.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/annotation-cache.md) shows how to build the real
 one with SpliceImpactR. [docs/proteins.md](https://github.com/zachpwakefield/Splice-Assay/blob/main/docs/proteins.md) covers the matching, the cache format for other
 annotation, and checks against SpliceImpactR.
 
@@ -361,6 +383,7 @@ annotation, and checks against SpliceImpactR.
 | q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
 | PSI hazard ratio | per SD of the cohort's PSI | `--hr-unit iqr` (per IQR) |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
+| Pages (probe) | the best-ranked measurable events, at most 30 | `--max-pages N` |
 | GTF | `$SPLICE_ASSAY_GTF` | `--gtf` |
 | Protein cache | `$SPLICE_ASSAY_PROTEINS` (none: no protein band) | `--proteins`, `--no-proteins` |
 | Expression page | one per gene, after its splicing pages, when an expression table is given | `--no-gex` |
@@ -522,7 +545,8 @@ Before you use it:
 - **It is a draft.** Read it against `report.md` and the pages. Its wording differs from run to run; the probe's other
   outputs are unchanged.
 - **Setup.** Install Claude Code and sign in once (`claude`, then `/login`), or set `ANTHROPIC_API_KEY`.
-  `--agent-model opus` (or `sonnet`) picks the model; by default Claude Code's own is used. Your own Claude Code
+  `--agent-model opus` (or `sonnet`) picks the model; by default Claude Code's own is used. Both routes wait up to
+  10 minutes for the answer; `summarize --timeout SECONDS` changes that. Your own Claude Code
   settings (`~/.claude/CLAUDE.md`, hooks, output style) still apply and can change the summary's style. If the
   summary fails, the probe's outputs stand; `splice-assay summarize PROBE_DIR` tries again.
 - **Cost.** Signed in with a Claude subscription, a summary counts toward the plan's usage limits and is not charged
@@ -562,7 +586,7 @@ Before you use it:
     found), and `--detail-covariate` adds the terms you name.
 - **Two events.** Two events of the same gene can share a figure, for example two retained introns.
 - **Smaller GTF.** `splice-assay gtf-subset gencode.gtf.gz --events my_data/psi.csv --out small.gtf.gz` keeps only the
-  records near your events.
+  records of your events' genes and those within 20 kb of the events (`--flank NT`).
 
 ## Settings
 
@@ -577,6 +601,23 @@ with a JSON file (`--settings my.json`) or in Python (`sa.Settings(min_pairs=5)`
   - PSI observed in at least 50% of the survival samples, with at least 10 values away from the mode.
   - KM: split at the median (`km_split`: `median`, `mean` or a value), 10 patients per arm and 10 events.
   - Cox: 30 patients and 10 events; a fit with fewer than 20 events is marked low power (‡).
+- **Other analysis settings.**
+  - `time_unit` (days) and `days_per_year` (365.25): the survival times' unit, converted to years for the KM axes;
+  - `psi_step` (0.10): the PSI step of `cox_beta` and `hr_per_step` in `survival.csv` and of the `psi` row in
+    `cox_terms.csv` (the HR per SD or IQR does not depend on it);
+  - `ci_z` (1.96, for every 95% interval);
+  - `ph_test` (the Schoenfeld tests) and `robust_01` (a hit's 0/1 check), both on;
+  - `round_decimals` (12): PSI and differences are rounded before comparisons.
+- **Drawing.**
+  - `formats` (svg, pdf, png) and `dpi` (400, for the PNG files);
+  - the KM axes: `km_max_years` (10) and a tick every `km_tick_years` (2);
+  - `case_label` and `reference_label`, as `--case-label` and `--reference-label`;
+  - the gene model: it leaves out transcripts of the `exclude_transcript_types` (retained_intron), draws genes of the
+    `nested_biotypes` (snoRNA, scaRNA) in a track under it, and reads the GTF within `gtf_flank` (20000 nt) of the
+    events.
+- **Every setting.** `sa.Settings().to_dict()` lists them all with their values, and
+  [config.py](https://github.com/zachpwakefield/Splice-Assay/blob/main/src/splice_assay/config.py) describes each in a
+  comment. Reports and figures list every analysis setting you changed from its default.
 
 ## Scope and limits
 

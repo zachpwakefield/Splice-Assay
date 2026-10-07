@@ -63,8 +63,9 @@ for (db in c("interpro", "pfam", "cdd", "elm", "mobidblite", "signalp", "tmhmm")
 splice-assay protein-cache ~/splice_assay_annotation --out ~/splice_assay_proteins
 ```
 
-This needs `Rscript` once (any R, no packages). It writes three tables (exons, proteins, features) as Parquet with
-pyarrow, else gzipped TSV, plus `SOURCE.txt`. The human GENCODE 45 cache is about 70 MB.
+This needs `Rscript` once (any R, no packages; `--rscript PATH` when it is not on the PATH). It writes three tables
+(exons, proteins, features) as Parquet with pyarrow, else gzipped TSV, plus `SOURCE.txt`. The human GENCODE 45 cache
+is about 70 MB.
 
 ## 4. Use it
 

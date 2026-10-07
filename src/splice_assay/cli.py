@@ -12,7 +12,7 @@ import pandas as pd
 
 from . import __version__
 from .config import Settings
-from .dataset import EVENT_COLUMNS, Dataset, InputError, read_table
+from .dataset import EVENT_COLUMNS, Dataset, InputError, check_table_names, read_table
 from .stats.survival import CoxModel
 
 
@@ -54,11 +54,18 @@ def _pairs(items, what) -> dict:
     return out
 
 
+def _tables(args) -> dict:
+    """--table NAME=PATH as {name: path}, every name checked before any table is read."""
+    tables = _pairs(args.table, "--table")
+    check_table_names(tables)
+    return tables
+
+
 def _dataset(args, event_ids=None) -> Dataset:
     return Dataset.from_dir(args.data, event_ids=event_ids, case=args.case or None,
                             reference=args.reference or None, columns=_pairs(args.column, "--column") or None,
                             na_values=args.na_value, keep=args.keep, keep_column=args.keep_column,
-                            where=args.where, **_pairs(args.table, "--table"))
+                            where=args.where, **_tables(args))
 
 
 def _cox_model(**kw) -> CoxModel:
@@ -92,7 +99,7 @@ def _events_source(args):
     """Where the event columns are, as Dataset.from_dir reads them: --table events=, else the folder's events table,
     else the psi table (--table psi= or the folder's)."""
     from .dataset import find_tables
-    tables = _pairs(args.table, "--table")
+    tables = _tables(args)
     if tables.get("events"):
         return tables["events"]
     if Path(args.data).is_dir() and "events" in find_tables(args.data):
@@ -257,7 +264,7 @@ def cmd_summarize(args) -> int:
 
 
 def cmd_probe(args) -> int:
-    """Every event of a gene (or every event) in every cohort: ranked, one assay page per event."""
+    """Every event of a gene (or every event) in every cohort: ranked, with assay pages for the best-ranked events."""
     from .dataset import events_table
     from .probe import gene_events, probe
     event_ids = args.event or None
@@ -697,7 +704,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_panel)
 
     sp = sub.add_parser("probe", help="explore: every event of a gene (or every event) in every cohort, ranked, with "
-                                      "one assay page per event")
+                                      "assay pages for the best-ranked events")
     data_args(sp)
     model_args(sp)
     sp.add_argument("--gene", action="append", help="probe the events of this gene (repeat for more; default: all)")
@@ -784,10 +791,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--b2", help="rMATS b2.txt")
     sp.add_argument("--names1", help="comma-separated sample names instead of BAM names (group 1)")
     sp.add_argument("--names2", help="comma-separated sample names (group 2)")
-    sp.add_argument("--counting", default="JCEC", choices=["JC", "JCEC"])
+    sp.add_argument("--counting", default="JCEC", choices=["JC", "JCEC"],
+                    help="the rMATS counts read: JCEC (junction and exon-body reads; default) or JC (junction "
+                         "reads only)")
     sp.add_argument("--types", help="comma-separated event types (default SE,RI,A3SS,A5SS,MXE)")
     sp.add_argument("--prefix", default="", help="prefix for event IDs")
-    sp.add_argument("--mxe-psi-exon", default="transcript_upstream", choices=["transcript_upstream", "first_listed"])
+    sp.add_argument("--mxe-psi-exon", default="transcript_upstream", choices=["transcript_upstream", "first_listed"],
+                    help="which MXE exon the PSI measures: the transcript-upstream one (default) or the one rMATS "
+                         "lists first; check a known event")
     sp.add_argument("--append", action="store_true", help="add to the events and psi tables already in --out")
     layout_args(sp)
     sp.add_argument("--out", required=True)
@@ -810,7 +821,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("gtf")
     sp.add_argument("--events", required=True)
     sp.add_argument("--out", required=True)
-    sp.add_argument("--flank", type=int, default=20000)
+    sp.add_argument("--flank", type=int, default=20000,
+                    help="nt kept on each side of the events, besides their genes' records (default 20000)")
     sp.set_defaults(func=cmd_gtf_subset)
     return p
 

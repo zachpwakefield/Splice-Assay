@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- **`--table` names are checked.** An unknown table name (`--table clincal=…`, or a misspelt keyword of
+  `Dataset.from_dir`) is an error, raised before any table is read; it was ignored, and the folder's table of the
+  intended name was read instead.
+- **Docs.** `--max-pages` is documented: a probe draws pages for the best-ranked measurable events, at most 30, not
+  one per event as the README, the guides, `probe -h` and `report.md` said. The options that were only in `-h`
+  (`--table`, `summarize --timeout`, the `import-rmats` and `import-hitindex` options, `protein-cache --rscript`,
+  `gtf-subset --flank`) are now in the README, and `--counting`, `--mxe-psi-exon` and `--flank` have help text.
+  The settings that no guide mentioned are described in the README, and every setting has a comment in
+  `config.py`.
+
 ## 0.3.0 (2026-10-06)
 
 - **Probe overview.** With an expression table, the host gene's own expression has a row of its own below the

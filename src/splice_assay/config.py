@@ -81,7 +81,7 @@ class Settings:
     ph_note_below: float = 0.05       # a PH test p below this adds a note on the page and in the tables; the result
                                       # stands (0 = never)
     time_unit: str = "days"           # unit of survival.time: days, months or years
-    days_per_year: float = 365.25
+    days_per_year: float = 365.25     # days in a year, for converting survival times to years
     # ------------------------------------------------------------------ correlation (opt-in: probe --correlation)
     corr_min_n: int = 20              # Spearman's rho (an event with its host gene's expression, or two events of a
                                       # gene, per cohort) needs at least this many patients with both values
@@ -93,19 +93,23 @@ class Settings:
     # ------------------------------------------------------------------ numerics
     round_decimals: int = 12          # PSI and differences are rounded to this many decimals before comparisons
     # ------------------------------------------------------------------ drawing
-    km_max_years: float = 10.0
-    km_tick_years: float = 2.0
+    km_max_years: float = 10.0        # KM axes end at this many years or at the first tick past the
+                                      # last time, whichever is earlier
+    km_tick_years: float = 2.0        # a KM axis tick every this many years
     gene_model_min_frac: float = 0.10  # collapsed gene model: keep exons used by >= this share of transcripts
-    nested_biotypes: tuple = ("snoRNA", "scaRNA")
-    exclude_transcript_types: tuple = ("retained_intron",)
+    nested_biotypes: tuple = ("snoRNA", "scaRNA")  # genes of these types inside the host gene get a track of
+                                      # their own under its model
+    exclude_transcript_types: tuple = ("retained_intron",)  # transcripts of these types are left out of the
+                                      # collapsed gene model
     gtf_flank: int = 20000            # GTF records are read within this many nt of the events
     case_label: str | None = None     # display name of the case group (default: as spelled in the data)
     reference_label: str | None = None  # display name of the reference group
     cohorts_per_page: int = 6         # more cohorts on a page are split into balanced pages of at most this many,
                                       # each with the full forest (0 = one page)
     q_mark_below: float = 0.05        # a q below this is marked * on the pages, beside the p-based fill (0 = never)
-    formats: tuple = ("svg", "pdf", "png")
-    dpi: int = 400
+    formats: tuple = ("svg", "pdf", "png")  # the file types of each figure (any of the three; probe.pdf
+                                      # is always written)
+    dpi: int = 400                    # resolution of the PNG files
 
     def __post_init__(self):
         for name in ("min_pairs", "min_group", "min_off_modal", "km_min_group", "km_min_events", "cox_min_n",

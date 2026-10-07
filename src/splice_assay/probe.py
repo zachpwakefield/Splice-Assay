@@ -1,4 +1,5 @@
-"""Probe: every event of a gene (or every event given) in every cohort, ranked, with one assay page per event.
+"""Probe: every event of a gene (or every event given) in every cohort, ranked, with assay pages for the best-ranked
+events (max_pages).
 
 For one endpoint (default OS) and every event x cohort, the probe runs the group tests, the KM split and two Cox
 models: the base model (PSI + host expression, the forest's model) and the adjusted model (by default + age + sex +
@@ -12,8 +13,9 @@ stage, found in the clinical table; see clinical.py). Then:
     gene_map_<GENE>.png   per gene: its model (with a GTF) and its probed events observed in enough samples, 5' to 3',
                     each row beside its cells of the overview (the gene's own row: its expression) and, with
                     correlation=True, the median rho between its events (see plot/genemap.py)
-    pages/          one assay page per ranked event (the event, its most promising cohorts, their models, the
-                    forest); with an expression table, also the host gene's expression page (<GENE>_expression)
+    pages/          one assay page per ranked, measurable event, at most max_pages (the event, its most promising
+                    cohorts, their models, the forest); with an expression table, also the host gene's expression
+                    page (<GENE>_expression)
     probe.pdf       the overview, the gene maps, the correlation figure (with correlation=True), every event page in
                     rank order, then the expression page
     report.md       what was run, the ranking, how to read it, and how to reproduce it
@@ -963,7 +965,8 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
           *([f"| `gene_map_<GENE>.png` ({', '.join(m.removeprefix('gene_map_') for m in maps)}) | Each gene's model "
              "and its probed events, 5′ to 3′, beside their cells of the overview"
              + (", and the median ρ between them" if corr is not None and len(corr) else "") + " |"] if maps else []),
-          "| `pages/` | One assay page per ranked event (SVG, PDF, PNG, CSV of plotted values, provenance) |",
+          "| `pages/` | One assay page per ranked, measurable event, at most " + str(max_pages)
+          + " (`--max-pages`; SVG, PDF, PNG, CSV of plotted values, provenance) |",
           "| `probe.pdf` | The overview, " + ("the gene maps, " if maps else "")
           + ("the correlation figure, " if corr is not None and len(corr) else "") + "then every page |",
           *(["| `proteins.csv` | One row per event: suggested transcripts, protein change, features |"]

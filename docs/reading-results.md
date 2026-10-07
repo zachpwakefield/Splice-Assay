@@ -1,8 +1,8 @@
 # Reading the results, panel by panel
 
-A probe writes a report, an overview, one assay page per ranked event and the host gene's expression page. `panel`
-draws the same pages for the cohorts you choose. This guide walks through one assay page from top to bottom, then the
-expression page and the probe's files.
+A probe writes a report, an overview, an assay page for each of the best-ranked events (at most 30, `--max-pages`)
+and the host gene's expression page. `panel` draws the same pages for the cohorts you choose. This guide walks through
+one assay page from top to bottom, then the expression page and the probe's files.
 
 The figures come from the synthetic example, so you can open the same files: run `splice-assay example demo/`, then
 `splice-assay probe demo/data --gene SYN1 --gtf demo/data/annotation.gtf --proteins demo/proteins`. The cohorts are

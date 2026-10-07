@@ -130,6 +130,14 @@ def with_missing(df: pd.DataFrame, na_values) -> pd.DataFrame:
     return out
 
 
+def check_table_names(names) -> None:
+    """Every name must be one of TABLES: a misspelt one would leave the folder's table of that name in use."""
+    unknown = sorted(set(names) - set(TABLES))
+    if unknown:
+        raise InputError(f"unknown table name{'s' if len(unknown) > 1 else ''} "
+                         f"{', '.join(map(repr, unknown))}: expected one of {', '.join(TABLES)}")
+
+
 def find_tables(folder) -> dict[str, Path]:
     """Files named <table>.<csv|tsv|txt|parquet>[.gz] in a folder, e.g. samples.csv, psi.parquet."""
     folder = Path(folder)
@@ -819,6 +827,7 @@ class Dataset:
     def from_dir(cls, folder, event_ids=None, case=None, reference=None, columns=None, endpoints=None,
                  na_values=None, keep=None, keep_column=None, where=None, **override):
         """Read <table>.<csv|tsv|txt|parquet> files from a folder; keyword arguments replace single tables."""
+        check_table_names(override)
         found = find_tables(folder)
         if "samples" not in found and override.get("samples") is None:
             raise InputError(f"{folder}: no samples table (expected e.g. samples.csv)")

@@ -104,7 +104,7 @@ splice-assay probe DATA --gene GENE [--gtf annotation.gtf.gz] [--na-value missin
 | `events.csv` | One row per event (see below) |
 | `cells.csv` | One row per event × cohort: every statistic, base and adjusted (`adj_*`), and BH q within each gene |
 | `overview.png` | Events × cohorts at a glance: HR colour, p < 0.05 dot (a `*` instead when q < 0.05), group-hit frame; the host gene's expression in its own row (with an expression table) |
-| `pages/NNN_EVENT.png` | One assay page per ranked event |
+| `pages/NNN_EVENT.png` | One assay page per ranked, measurable event, at most 30 (`--max-pages N`) |
 | `pages/GENE_expression.png` | The host gene's expression page (with an expression table) |
 | `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model and its probed events observed in enough samples, 5′ to 3′, beside their overview cells (and, with `--correlation`, the median ρ between them) |
 | `probe.pdf` | The overview, the gene maps, the correlation figure (with `--correlation`), the event pages in rank order, then the expression page |
@@ -284,6 +284,7 @@ splice-assay panel DATA --event EVENT_ID --out OUT [--cohort A --cohort B ...] [
 | Endpoint | OS | `--endpoint` (repeatable in `probe`, or `all`) |
 | Subset | every patient | `--keep FILE`, `--where COLUMN=VALUE` |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
+| Pages (probe) | the best-ranked measurable events, at most 30 | `--max-pages N` |
 | Groups | tumour (case) vs normal (reference) | `--case`, `--reference` |
 | Base model | PSI + host expression | `--no-expression` (from the adjusted model too) |
 | Adjusted model | the base model + age + sex + stage (found, cleaned) | `--covariate`/`--strata`, `--no-adjust` |

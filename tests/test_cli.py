@@ -128,6 +128,19 @@ def test_a_psi_table_given_alone_keeps_the_folder_events_table(tmp_path, capsys)
     capsys.readouterr()
 
 
+def test_an_unknown_table_name_is_an_error(tmp_path, capsys):
+    """--table with a misspelt name fails instead of leaving the folder's table in use, also where the events are
+    read before the dataset (probe --gene, panel, panels), so a gene or event only in the misnamed file is not
+    reported as missing instead."""
+    data, _ = _example_data(tmp_path)
+    spec = tmp_path / "spec.csv"
+    spec.write_text("events,cohorts,endpoint\nNEWG:SE:1,COH1,OS\n")
+    for cmd in (["validate", data], ["probe", data, "--gene", "NEWG"], ["panel", data, "--event", "NEWG:SE:1", "--out",
+                str(tmp_path / "fig")], ["panels", data, "--spec", str(spec), "--out", str(tmp_path / "figs")]):
+        assert main([*cmd, "--table", f"psy={tmp_path / 'psi.csv'}"]) == 2, cmd[0]
+        assert "unknown table name 'psy': expected one of samples, psi" in capsys.readouterr().err, cmd[0]
+
+
 def test_results_keep_their_model_and_settings(tmp_path, capsys):
     import pytest
     import splice_assay as sa
