@@ -237,6 +237,21 @@ def test_the_overview_hatches_imprecise_cells(ds, tmp_path):
     assert hatched(FAST.replace(imprecise_ci_ratio=0)) == 0
 
 
+def test_a_correlation_needs_patients_off_the_modal_value():
+    """Each value must differ from its modal value in at least min_off_modal patients: one or two patients moving
+    together in otherwise constant values give rho 1 and p near 0, which is not evidence."""
+    from splice_assay.correlation import _rho
+    rng = np.random.default_rng(1)
+    x, y = np.ones(200), rng.uniform(0, 1, 200)
+    x[:3] = 0.5
+    s = sa.Settings()
+    assert _rho(x, x.copy(), s)[0] == "few_off_modal" and _rho(x, y, s)[0] == "few_off_modal"
+    st, n, rho, p = _rho(x, x.copy(), s.replace(min_off_modal=3))                # the old gate: any spread
+    assert st == "tested" and n == 200 and rho == pytest.approx(1) and p < 1e-10
+    x[:10] = 0.5
+    assert _rho(x, y, s)[0] == "tested" and _rho(np.ones(200), y, s.replace(min_off_modal=0))[0] == "constant"
+
+
 def _pairs(fig) -> set[tuple[str, str]]:
     """The (left, right) labels of a correlation figure's pair rows: the texts level with each "×"."""
     at = {}
@@ -248,24 +263,20 @@ def _pairs(fig) -> set[tuple[str, str]]:
 
 def test_the_correlation_grid_shares_its_rows(ds):
     """With too few rows for everything: the best-ranked events' expression rows take at most half while pairs wait,
-    and each gene's strongest pairs the rest, the genes taking turns; fewer pairs leave the expression rows more."""
+    and the pairs among each gene's best-ranked events the rest, the genes taking turns; fewer pairs leave the
+    expression rows more."""
     syn3 = ["SYN3:AFE:0001", "SYN3:AFE:0002", "SYN3:ALE:0001", "SYN3:ALE:0002"]
     c = correlations(ds, events=SYN1 + syn3)
     ranked = pd.DataFrame({"rank": range(1, 8), "event_id": syn3 + SYN1, "gene": ["SYN3"] * 4 + ["SYN1"] * 3,
                            "label": [e.split(":", 1)[1] for e in syn3 + SYN1],
                            "event_type": [e.split(":")[1] for e in syn3 + SYN1]})
-    rho = c[c.kind.eq("event")].groupby(["event_id", "partner"]).rho.apply(lambda r: r.abs().max())
-    lab = dict(zip(ranked.event_id, ranked.label))
-    strongest = {g: [tuple(lab[e] for e in ab) for ab in rho[[a.startswith(g) for a, _ in rho.index]]
-                     .sort_values(ascending=False).index] for g in ("SYN3", "SYN1")}
     fig = correlation_figure(c, ranked, FAST, max_rows=9)        # 7 expression rows, 9 pairs: 4 and 5 shown
     texts = _texts(fig)
     assert "with SYN3 expression" in texts and "with SYN1 expression" not in texts
-    want = strongest["SYN3"][:3] + strongest["SYN1"][:2]                          # the genes take turns
-    assert {tuple(sorted(p)) for p in _pairs(fig)} == {tuple(sorted(p)) for p in want}
-    assert {("AFE:0001", "AFE:0002"), ("ALE:0001", "ALE:0002")} <= _pairs(fig)   # the two pairs near -1
-    assert any("9 of 16 rows: the best-ranked events' expression rows, then each gene's strongest pairs" in t
-               for t in texts)
+    assert _pairs(fig) == {("AFE:0001", "AFE:0002"), ("AFE:0001", "ALE:0001"), ("AFE:0002", "ALE:0001"),  # SYN3's
+                           ("SE:1", "A3SS:1"), ("SE:1", "RI:1")}                 # top 3, SYN1's first two: in turns
+    assert ("9 of 16 rows: the best-ranked events' expression rows, then the pairs among each gene's best-ranked "
+            "events" in " ".join(texts))                                          # the caption, over its lines
     few = c[c.kind.eq("expression") | c.event_id.isin(SYN1)]                      # 7 expression rows, 3 pairs
     texts = _texts(fig := correlation_figure(few, ranked, FAST, max_rows=8))      # 5 of the 7, and every pair
     assert {"with SYN3 expression", "with SYN1 expression"} <= set(texts) and len(_pairs(fig)) == 3
@@ -276,9 +287,24 @@ def test_the_correlation_grid_shares_its_rows(ds):
     assert not {"6", "7", "ALE:0001", "ALE:0002"} & set(texts)                   # 6 and 7 left out
     texts = _texts(fig := correlation_figure(c[c.event_id.isin(syn3)], ranked, FAST, max_rows=8))   # 4 and 6
     assert len(_pairs(fig)) == 4
-    assert any("8 of 10 rows: every expression row, then each gene's strongest pairs" in t for t in texts)
+    assert "8 of 10 rows: every expression row, then the pairs among each gene's best-ranked events" in " ".join(texts)
     texts = _texts(correlation_figure(c[c.kind.eq("event")], ranked, FAST, max_rows=5))   # no expression rows
-    assert any("5 of 9 rows: each gene's strongest pairs (all" in t for t in texts)
+    assert any("5 of 9 rows: the pairs among each gene's best-ranked events" in t for t in texts)
     assert not any(" rows: " in t for t in _texts(correlation_figure(c, ranked, FAST)))   # all 16 fit
     assert correlation_figure(c, ranked, FAST, max_rows=0) is None                # nothing to draw
     assert correlation_figure(c, ranked.assign(event_id="other"), FAST) is None
+
+
+def test_the_correlation_figure_keeps_its_text_inside(ds):
+    """Every text, the key's labels among them, ends inside the figure: a key label wider than its row runs off. 33
+    cohorts, as in TCGA, put the key beside the colour bar, where it has the least room."""
+    c = correlations(ds, events=SYN1)
+    c = pd.concat([c.assign(cohort=c.cohort + f"_{i}") for i in range(9)])           # 4 cohorts x 9, then 33
+    c = c[c.cohort.isin(sorted(c.cohort.unique())[:33])]
+    ranked = pd.DataFrame({"rank": range(1, 4), "event_id": SYN1, "gene": "SYN1",
+                           "label": [e.split(":", 1)[1] for e in SYN1], "event_type": [e.split(":")[1] for e in SYN1]})
+    fig = correlation_figure(c, ranked, FAST)
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    r = FigureCanvasAgg(fig).get_renderer()
+    texts = list(fig.texts) + [t for a in fig.axes for t in a.texts]
+    assert texts and max(t.get_window_extent(r).x1 for t in texts if t.get_text()) <= fig.bbox.x1

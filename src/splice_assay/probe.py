@@ -621,7 +621,7 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
         n_t = corr.corr_status.eq("tested")
         log(f"correlation: {int((n_t & corr.kind.eq('expression')).sum())} event x cohort cells with host expression, "
             f"{int((n_t & corr.kind.eq('event')).sum())} event pair x cohort cells tested (Spearman, at least "
-            f"{s.corr_min_n} patients)")
+            f"{s.corr_min_n} patients, {s.min_off_modal} of them off each value's modal value)")
     ranked = rank_events(cells, ds, s.alpha, s.psi_hr_unit)
     if "expr_rho" in cells and len(ranked):            # rho with expression in each event's best cohort
         rho = cells.set_index(["event_id", "cohort"]).expr_rho
@@ -973,7 +973,9 @@ def _corr_lines(corr: pd.DataFrame, ds: Dataset, s: Settings, gex: bool = False,
                       + (f"kept (the {rare} rarely observed are left out, `--min-observed`)." if rare else "probed.")]
     cut = f"|ρ| ≥ {s.corr_note_above:g}"
     out.append("- **What:** Spearman ρ over each cohort's survival samples (one case sample per patient, the samples "
-               f"the survival tests draw on), where at least {s.corr_min_n} patients have both values (`corr_min_n`).")
+               f"the survival tests draw on), where at least {s.corr_min_n} patients have both values (`corr_min_n`) "
+               f"and each value differs from its most common value in at least {s.min_off_modal} of them "
+               "(`min_off_modal`, as for the survival tests).")
     x = corr[corr.kind.eq("expression")]
     if len(x):
         t = x[x.corr_status.eq("tested")]

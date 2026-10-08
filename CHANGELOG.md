@@ -6,8 +6,14 @@
   its rank was), and each column's under the column, so a cell's pair reads without counting rows.
 - **The correlation figure keeps room for pairs.** It shows at most 60 rows, and a gene's expression rows came
   first, so a gene with 60 or more events (TCGA SNHG17) showed no pairs at all. The expression rows of the
-  best-ranked events (across genes) now take at most half of the rows, more when there are fewer pairs, and each
-  gene's strongest pairs the rest. The caption names only what is shown.
+  best-ranked events (across genes) now take at most half of the rows, more when there are fewer pairs, and the
+  pairs among each gene's best-ranked events the rest, so the page shows whether the top hits move together. (The
+  strongest pairs were all near-duplicate events at ρ ≈ 1 in TCGA SNHG17: rMATS lists an exon with slightly
+  different boundaries as separate events.) The caption names only what is shown.
+- **Correlations need patients that vary.** A pair is tested only when each value differs from its most common
+  value in at least `min_off_modal` (10) patients, the survival tests' gate (status `few_off_modal` otherwise).
+  Values constant but for one or two patients gave ρ near ±1 and p near 0 from those patients alone: in TCGA SNHG17,
+  AFE:0001 × ALE:0002 had ρ 1.00 in BRCA from one patient. There it leaves 4,953 of 52,719 pair cells untested.
 - **Evidence grades choose the page cohorts.** Each event × cohort gets three lines: Cox (adjusted where fitted;
   an imprecise fit is not significant but keeps its direction), KM, and the tumour–normal change. Each line has a direction and whether it is
   significant. They combine into a grade:

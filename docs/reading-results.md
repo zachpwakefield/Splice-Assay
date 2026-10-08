@@ -261,8 +261,10 @@ results laid out along the gene.
 - **Gene by gene**, in the order of their best rank: first each event against the gene's expression (by rank), then
   each pair of its events (the better-ranked event on the left).
 - **At most 60 rows.** With more, the expression rows of the best-ranked events take at most half (more when there
-  are few pairs), and the pairs the rest: each gene's strongest (largest |ρ| in any cohort), the genes taking turns.
-  The caption says how many rows are shown. Pairs near 1 usually measure the same change twice.
+  are few pairs), and the pairs among each gene's best-ranked events the rest (its events added in rank order, the
+  genes taking turns), so the page shows whether the top hits move together. The caption says how many rows are
+  shown; the gene map's triangle has the median of every pair. Pairs near 1 usually measure the same change twice:
+  rMATS lists an exon with slightly different boundaries, or with different flanking exons, as separate events.
 - **Colour and value** are Spearman ρ in the cohort's tumour samples (one per patient, the survival samples): green
   positive, purple negative. The value is black where p < 0.05 and grey otherwise. A frame marks |ρ| ≥ 0.7, and a
   grey cell was not tested; the key beside the colour bar shows each. With many cohorts the cells are too narrow

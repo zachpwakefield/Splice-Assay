@@ -559,7 +559,8 @@ It writes `correlations.csv` (one row per pair × cohort: `rho`, `corr_p`, `corr
 `correlation.png` (each cohort's ρ, gene by gene, after the gene maps in `probe.pdf`), adds the median over the
 cohorts of each pair of events as a triangle to each gene map, adds `expr_rho` to `cells.csv` and `best_expr_rho` (ρ in
 the best cohort) to `events.csv`, and summarises the strong pairs (|ρ| ≥ 0.7, `corr_note_above`) in the report. A pair
-needs 20 patients with both values (`corr_min_n`). q values are Benjamini–Hochberg within each gene and kind. Events
+needs 20 patients with both values (`corr_min_n`), and each value must differ from its most common value in 10 of
+them (`min_off_modal`, as for the survival tests), so one or two patients cannot make ρ. q values are Benjamini–Hochberg within each gene and kind. Events
 observed in under half of every cohort's survival samples are left out, as they are from the gene maps
 (`--min-observed`). In Python, `splice_assay.correlation.correlations(ds, events=...)` returns the table on its own.
 

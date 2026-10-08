@@ -250,8 +250,11 @@ would add their difference in level to the correlation.
   expression gene). `event`: two events of the same gene (`partner` is the other event).
 - **Data.** The patients with both values observed (`corr_n`). They need no survival record or covariates, so `corr_n`
   can exceed an endpoint's `cox_n`.
-- **Gate.** At least `corr_min_n` (20; at least 3) such patients, and both values varying among them; otherwise the status is
-  `too_few_patients` or `constant`. `no_expression`: the expression table has no row for the host gene.
+- **Gate.** At least `corr_min_n` (20; at least 3) such patients, and each value differing from its modal value
+  (rounded to `round_decimals`) in at least `min_off_modal` (10) of them, the survival tests' gate; otherwise the
+  status is `too_few_patients`, `constant` (no spread) or `few_off_modal`. Without it, a value that is constant but
+  for one or two patients gives ρ near ±1 and p near 0 from those patients alone. `no_expression`: the expression
+  table has no row for the host gene.
 - **Test.** ρ is the Pearson correlation of the ranks (ties share their mean rank); p is two-sided, from the t
   distribution with n − 2 degrees of freedom (`scipy.stats.spearmanr`).
 - **q.** Benjamini–Hochberg within each gene, per kind, over its pairs × cohorts tested (`corr_q`, `corr_q_tests`); a

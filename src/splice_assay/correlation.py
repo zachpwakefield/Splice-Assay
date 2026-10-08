@@ -7,8 +7,9 @@ Spearman's rho between
     expression   an event's values (PSI, or the HIT index) and its host gene's expression;
     event        two events of the same gene.
 
-A pair is tested when at least Settings.corr_min_n patients have both values and each value varies among them. Every
-survival sample with both values counts, whether or not its patient enters an endpoint's Cox fit (a survival record,
+A pair is tested when at least Settings.corr_min_n patients have both values and each value differs from its modal
+value in at least Settings.min_off_modal of them (the survival tests' gate), so one or two patients cannot make rho.
+Every survival sample with both values counts, whether or not its patient enters an endpoint's Cox fit (a survival record,
 complete covariates), so n can exceed the fit's.
 q values: Benjamini-Hochberg within each gene, per kind, over its pairs x cohorts; pairs with a HIT index form families
 of their own (as in analysis.py). A correlation describes whether two values move together across patients; it does
@@ -37,6 +38,8 @@ def _rho(x: np.ndarray, y: np.ndarray, s: Settings) -> tuple[str, int, float, fl
     a, b = np.round(x[ok], s.round_decimals), np.round(y[ok], s.round_decimals)
     if not (np.ptp(a) > 0 and np.ptp(b) > 0):
         return "constant", n, np.nan, np.nan
+    if min(n - np.unique(v, return_counts=True)[1].max() for v in (a, b)) < s.min_off_modal:
+        return "few_off_modal", n, np.nan, np.nan          # rho would rest on a handful of patients
     rho, p = spearmanr(a, b)
     return "tested", n, float(rho), float(p)
 
@@ -46,7 +49,8 @@ def correlations(ds: Dataset, events=None, cohorts=None, settings: Settings | No
     """One row per pair x cohort (CORR_FIRST first): each event with its host gene's expression (`expression`; needs
     an expression table) and each pair of events of one gene (`within_gene`), for the events given (default: every
     event, HIT-index events only with include_hit) in `cohorts` (default all). Status: tested, too_few_patients,
-    constant, or no_expression (the expression table has no row for the host gene)."""
+    constant, few_off_modal (fewer than min_off_modal patients away from a value's modal value), or no_expression
+    (the expression table has no row for the host gene)."""
     from .analysis import _names, _order, default_events, gene_fdr
     s = settings or Settings()
     events = default_events(ds, include_hit) if events is None else \
@@ -101,8 +105,9 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     (by the better rank, then the other's). A printed value is black where p < alpha and grey otherwise (a dot marks
     p < alpha where no value is printed); |rho| >= corr_note_above is framed; grey cells were not tested. `events`:
     the ranked events (probe.rank_events). At most max_rows rows: the expression rows of the best-ranked events, at
-    most half of them unless the pairs leave more (max(max_rows // 2, max_rows - pairs)), then the pairs, the genes
-    taking turns, each gene's strongest (largest |rho| in any cohort) first. None when there is nothing to draw."""
+    most half of them unless the pairs leave more (max(max_rows // 2, max_rows - pairs)), then the pairs among each
+    gene's best-ranked events (adding its events one by one in rank order), the genes taking turns. None when there
+    is nothing to draw."""
     import matplotlib
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
@@ -137,14 +142,12 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     keep_x = {g: [r for i, r in enumerate(rx) if (g, i) in chosen] for g, (_, rx, _) in per_gene.items()}
     keep_p = {g: [] for g in per_gene}
     budget = max_rows - len(chosen)
-    def strength(row) -> float:                             # the largest |rho| of a pair in any cohort
-        r = np.abs(row[1].rho.to_numpy(float))
-        return float(r[np.isfinite(r)].max()) if np.isfinite(r).any() else 0.0
-    strong_first = {g: sorted(rp, key=lambda r: -strength(r)) for g, (_, _, rp) in per_gene.items()}
-    while budget > 0 and any(strong_first.values()):        # then the pairs, gene by gene in turn
+    queue = {g: sorted(rp, key=lambda r: (rank[r[0][2]], rank[r[0][1]]))   # the pairs among its best-ranked events:
+             for g, (_, _, rp) in per_gene.items()}                     # by the worse rank, then the better
+    while budget > 0 and any(queue.values()):                # then the pairs, gene by gene in turn
         for g in per_gene:
-            if budget > 0 and strong_first[g]:
-                keep_p[g].append(strong_first[g].pop(0))
+            if budget > 0 and queue[g]:
+                keep_p[g].append(queue[g].pop(0))
                 budget -= 1
     layout, n_data = [], 0                   # (kind, payload): gene and block heads, then rows of cells
     for g, (host, rx, rp) in per_gene.items():
@@ -181,7 +184,7 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     x_kept, p_kept = len(chosen), sum(map(len, keep_p.values()))
     shown = ", then ".join(filter(None, (
         ("every expression row" if x_kept == x_all else "the best-ranked events' expression rows") if x_kept else "",
-        ("every pair" if p_kept == n_pairs else "each gene's strongest pairs") if p_kept else "")))
+        ("every pair" if p_kept == n_pairs else "the pairs among each gene's best-ranked events") if p_kept else "")))
     more = f"; {n_data} of {n_all} rows: {shown} (all in correlations.csv)" if n_all > n_data else ""
     caption = (f"colour{' and value' if values else ''}: Spearman ρ in each cohort's survival samples (one case sample "
                "per patient, as in the survival tests)" + more)
@@ -195,8 +198,8 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     if s.corr_note_above > 0:
         items.append((dict(face=strong_, frame=True, value=(".80", G.ink_on(strong_)) if values else None),
                       f"|ρ| ≥ {s.corr_note_above:g}"))
-    items.append((dict(face=G.UNTESTED), f"not tested (fewer than {s.corr_min_n} patients with both values, or no "
-                                         "spread)"))
+    items.append((dict(face=G.UNTESTED), f"not tested (under {s.corr_min_n} patients, or under {s.min_off_modal} "
+                                         "off a value's mode)"))     # short enough for the key beside the bar
     lay = G.legend_layout(W, x_grid, bar_w, items)
     lab_h = max(S.text_width(c, 5.6) for c in cohorts) + 0.06
     top = 0.30 + 0.12 * len(cap) + 0.10 + lab_h
