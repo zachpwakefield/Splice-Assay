@@ -210,6 +210,7 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
     knots, drawn, scale_note = squeeze(exonic, lo, hi)
     # ------------------------------------------------------------------ horizontal layout (inches)
     labels = {e: str(E.at[e, "label"]) for e in ids}
+    col_of = {e: S.TYPE_COLOR.get(g.event_type, S.TYPE_DEFAULT) for e, g in zip(ids, geoms)}
     rank_w = S.text_width(str(max(rank.get(e, 0) for e in ids)), 6.0) + 0.04
     lab_w = max([S.text_width(labels[e], 6.6, weight="bold") for e in ids]
                 + [S.text_width(PSI_MEANING.get(g.event_type, "PSI"), 5.6) for g in geoms]
@@ -220,9 +221,13 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
     x_s0 = x_lab + lab_w + 0.22                              # the structure
     cw = min(0.22, max(0.09, 1.76 / max(nc, 1)))             # one survival cell
     strip_head = f"Cox HR per {U} · {endpoint}"
-    strip_w = max(nc * cw, S.text_width(strip_head, 6.2, weight="bold"), BAR_W)
+    hr_title = f"HR per {U} of {v}" + (" (expression: per SD)" if gx is not None and U != "SD" else "")
+    strip_w = max(nc * cw, S.text_width(strip_head, 6.2, weight="bold"), BAR_W,
+                  S.text_width(hr_title, 5.8))                # the bar's title, centred under it, stays in the strip
     mw = min(0.26, max(0.12, 2.0 / max(len(items), 1))) if items else 0.0
-    mat_w = max(len(items) * mw, S.text_width("Spearman ρ, median of cohorts", 5.6), BAR_W) if items else 0.0
+    tri_w = {e: S.text_width(labels[e], 5.6, weight="bold") for e in items}     # the triangle's event labels
+    mat_w = max([(i + 0.12) * mw + tri_w[e] + 0.04 for i, e in enumerate(items)]   # each row's, at its end
+                + [len(items) * mw, S.text_width("Spearman ρ, median of cohorts", 5.6), BAR_W]) if items else 0.0
     fixed = x_s0 + 0.34 + strip_w + (0.34 + mat_w if items else 0.0) + 0.14
     W = max(7.2, fixed + 3.2)
     struct_w = W - fixed
@@ -256,6 +261,8 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
     y_ev = y0 + gene_h
     yc = {e: y_ev + PITCH * (i + 0.5) for i, e in enumerate(ids)}
     y_end = y_ev + PITCH * n
+    y_col = y_end - (PITCH - CELL_H) / 2 + 0.04              # the triangle's column labels hang from here
+    y_rbar = y_col + max(tri_w[e] for e in items[:-1]) + 0.18 if items else y_end + 0.24   # the ρ bar, under them
     caption = (f"Rows: the gene and its probed events, 5′ to 3′, numbered by probe rank"
                + (f" (the best-ranked {n} of {n + left['beyond']})" if left["beyond"] else "")
                + ("; the gene's exons: its GTF transcripts collapsed" if model is not None else
@@ -264,15 +271,16 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
                + f"; cells: Cox HR per {U} of {v} per cohort ({fit_note or 'adjusted model where fitted'})"
                + (f"; the gene's row: HR per SD of {'its' if host == gene else host} expression (Cox on "
                   f"{gex_model or 'expression'}), no q" if gx is not None else "")
-               + (f"; ρ between events: Spearman correlation of two events' {v} in each cohort's survival samples, "
-                  "median over the cohorts (each cohort in correlation.png)" if items else ""))
+               + (f"; ρ between events: Spearman correlation of the {v} of the event named at the row's end and the "
+                  "one named under the column, in each cohort's survival samples, median over the cohorts (each "
+                  "cohort in correlation.png)" if items else ""))
     cap = G.clauses(caption, W - 0.24, 5.6)
     rho_hit = [(dict(face=G.rho_scale()[0](G.rho_scale()[1](0.8)), frame=True, value=(".80", S.INK)),
                 f"|ρ| ≥ {s.corr_note_above:g}")] if items and s.corr_note_above > 0 else []
     keys = _structure_key(geoms, model is not None) + [None] + G.hr_key(s, extra=rho_hit)
     key_w = x_strip - 0.34 - 0.12                            # under the gene and its events
     key_h = len(G.key_rows(keys, key_w)) * G.KEY_ROW
-    y_cap = y_end + max(0.62, 0.22 + key_h + 0.10)
+    y_cap = y_end + max(0.62, 0.22 + key_h + 0.10, y_rbar - y_end + 0.38)
     H = y_cap + 0.115 * len(cap) + 0.08
     hr_scale, rho_scale = G.hr_scale(), G.rho_scale()
     with matplotlib.rc_context(S.rc()):
@@ -367,7 +375,7 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
             fig.text(fx(x_lab), fy(yg + 0.20), "snoRNAs" if set(s.nested_biotypes) <= {"snoRNA", "scaRNA"}
                      else "Nested genes", fontsize=6.0, color=S.INK2, va="center")
         for e, g in zip(ids, geoms):
-            col = S.TYPE_COLOR.get(g.event_type, S.TYPE_DEFAULT)
+            col = col_of[e]
             fig.text(fx(x_rank), fy(yc[e] - 0.045), str(rank.get(e, "")), fontsize=6.0, color=S.MUTED, ha="right",
                      va="center")
             fig.text(fx(x_lab), fy(yc[e] - 0.045), labels[e], fontsize=6.6, fontweight="bold", color=col,
@@ -407,8 +415,7 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
                 if (e, c) in idx.index:
                     x = idx.loc[(e, c)]
                     cell(j, yc[e], *G.shown_fit(x, s), G.flag(x.get("group_hit")))
-        G.colorbar(fig, x_strip, y_end + 0.24, min(1.6, strip_w), W, H, hr_scale, *G.HR_TICKS,
-                   f"HR per {U} of {v}" + (" (expression: per SD)" if gx is not None and U != "SD" else ""),
+        G.colorbar(fig, x_strip, y_end + 0.24, min(1.6, strip_w), W, H, hr_scale, *G.HR_TICKS, hr_title,
                    ends=G.HR_ENDS)
         G.key(fig, 0.12, y_end + 0.22, key_w, W, H, keys)
         # ---------------------------------------------------------------- correlation triangle
@@ -422,7 +429,8 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
             show = mw >= 0.19                                 # room to print the value
             for i, a in enumerate(items):
                 y = yc[a]
-                ax.text(i + 0.5, y, str(rank.get(a, "")), ha="center", va="center", fontsize=5.6, color=S.MUTED)
+                ax.text(i + 0.12, y, labels[a], ha="left", va="center", fontsize=5.6, fontweight="bold",
+                        color=col_of[a], clip_on=False)               # the row's event, on the diagonal
                 for j, b in enumerate(items[:i]):
                     r = rho_e.get((a, b))
                     ok = r is not None and np.isfinite(r)
@@ -434,7 +442,10 @@ def gene_map(ds: Dataset, gene: str, ranked: pd.DataFrame, cells: pd.DataFrame, 
                     if ok and show:
                         ax.text(j + 0.5, y, G.rho_text(r), ha="center", va="center", fontsize=4.9,
                                 color=G.ink_on(face))
-            G.colorbar(fig, x_mat, y_end + 0.24, min(1.4, max(len(items) * mw, 0.9)), W, H, rho_scale,
+            for j, b in enumerate(items[:-1]):                    # each column's event, under it
+                ax.text(j + 0.5, y_col, labels[b], rotation=90, ha="center", va="top", fontsize=5.6,
+                        fontweight="bold", color=col_of[b], clip_on=False)
+            G.colorbar(fig, x_mat, y_rbar, min(1.4, max(len(items) * mw, 0.9)), W, H, rho_scale,
                        [-1, 0, 1], ["−1", "0", "1"], "Spearman ρ")
         for k, line in enumerate(cap):
             fig.text(fx(0.12), fy(y_cap + 0.115 * k), line, fontsize=5.6, color=S.INK2, va="top")

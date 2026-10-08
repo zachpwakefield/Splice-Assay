@@ -100,9 +100,9 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     their best rank: each event with its host gene's expression (in rank order), then each pair of the gene's events
     (by the better rank, then the other's). A printed value is black where p < alpha and grey otherwise (a dot marks
     p < alpha where no value is printed); |rho| >= corr_note_above is framed; grey cells were not tested. `events`:
-    the ranked events (probe.rank_events). At most max_rows rows: every gene's expression rows first, then the pairs,
-    shared between the genes and the strongest (largest |rho| in any cohort) first. None when there is nothing to
-    draw."""
+    the ranked events (probe.rank_events). At most max_rows rows: the expression rows of the best-ranked events, at
+    most half of them unless the pairs leave more (max(max_rows // 2, max_rows - pairs)), then the pairs, the genes
+    taking turns, each gene's strongest (largest |rho| in any cohort) first. None when there is nothing to draw."""
     import matplotlib
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
@@ -130,10 +130,13 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
         if rows_x or rows_p:
             per_gene[gene] = (x.partner.iloc[0] if len(x) else "", rows_x, rows_p)
     n_all = sum(len(rx) + len(rp) for _, rx, rp in per_gene.values())
-    budget, keep_x, keep_p = max_rows, {}, {g: [] for g in per_gene}
-    for g, (_, rx, _) in per_gene.items():                   # every gene's expression rows first
-        keep_x[g] = rx[:max(budget, 0)]
-        budget -= len(keep_x[g])
+    n_pairs = sum(len(rp) for _, _, rp in per_gene.values())
+    budget = max(max_rows // 2, max_rows - n_pairs)          # the expression rows: at most half while pairs wait
+    by_rank = sorted((rank[k[1]], g, i) for g, (_, rx, _) in per_gene.items() for i, (k, _) in enumerate(rx))
+    chosen = {(g, i) for _, g, i in by_rank[:max(budget, 0)]}             # the best-ranked events' expression rows
+    keep_x = {g: [r for i, r in enumerate(rx) if (g, i) in chosen] for g, (_, rx, _) in per_gene.items()}
+    keep_p = {g: [] for g in per_gene}
+    budget = max_rows - len(chosen)
     def strength(row) -> float:                             # the largest |rho| of a pair in any cohort
         r = np.abs(row[1].rho.to_numpy(float))
         return float(r[np.isfinite(r)].max()) if np.isfinite(r).any() else 0.0
@@ -154,6 +157,8 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
                 layout.append(("sub", head))
                 layout += [("row", r) for r in rows]
                 n_data += len(rows)
+    if not n_data:
+        return None
     cohorts = sorted(corr.cohort.unique())
     nc = len(cohorts)
     cw = min(0.26, max(0.12, 5.6 / max(nc, 1)))
@@ -173,9 +178,10 @@ def correlation_figure(corr: pd.DataFrame, events: pd.DataFrame, s: Settings, ma
     bar_w = 1.6
     W = max(4.5, x_grid + max(nc * cw, bar_w) + 0.3)     # the colour bar may reach past a narrow grid
     x_all = sum(len(rx) for _, rx, _ in per_gene.values())
-    shown = ("the expression rows of the best-ranked genes" if sum(map(len, keep_x.values())) < x_all else
-             "each gene's expression rows, then its strongest pairs" if any(keep_p.values()) else
-             "each gene's expression rows")
+    x_kept, p_kept = len(chosen), sum(map(len, keep_p.values()))
+    shown = ", then ".join(filter(None, (
+        ("every expression row" if x_kept == x_all else "the best-ranked events' expression rows") if x_kept else "",
+        ("every pair" if p_kept == n_pairs else "each gene's strongest pairs") if p_kept else "")))
     more = f"; {n_data} of {n_all} rows: {shown} (all in correlations.csv)" if n_all > n_data else ""
     caption = (f"colour{' and value' if values else ''}: Spearman ρ in each cohort's survival samples (one case sample "
                "per patient, as in the survival tests)" + more)

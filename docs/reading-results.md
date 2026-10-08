@@ -248,9 +248,9 @@ results laid out along the gene.
 - **The key** under the gene shows the drawing (exon, region measured by PSI, the two junctions, an exon's column)
   and the cells' marks, beside the colour bars.
 - **ρ between events** (with `--correlation`): a lower triangle over the event rows. Each cell is the Spearman ρ
-  between two events' PSI, computed in each cohort and summarised by its median over the cohorts; the grey numbers on
-  the diagonal name the columns by rank. A frame marks |ρ| ≥ 0.7. Each event's ρ with the gene's expression is in
-  `correlation.png` and `cells.csv` (`expr_rho`).
+  between two events' PSI, computed in each cohort and summarised by its median over the cohorts. The cell's row
+  event is named at the row's end, on the diagonal, and its column event under the column. A frame marks |ρ| ≥ 0.7.
+  Each event's ρ with the gene's expression is in `correlation.png` and `cells.csv` (`expr_rho`).
 - **Reading it.** Hits that cluster in one part of the gene, or that come from events sharing exons (a column runs
   through both), may be one change seen several times. The triangle says whether those events also move together.
 
@@ -260,6 +260,9 @@ results laid out along the gene.
 
 - **Gene by gene**, in the order of their best rank: first each event against the gene's expression (by rank), then
   each pair of its events (the better-ranked event on the left).
+- **At most 60 rows.** With more, the expression rows of the best-ranked events take at most half (more when there
+  are few pairs), and the pairs the rest: each gene's strongest (largest |ρ| in any cohort), the genes taking turns.
+  The caption says how many rows are shown. Pairs near 1 usually measure the same change twice.
 - **Colour and value** are Spearman ρ in the cohort's tumour samples (one per patient, the survival samples): green
   positive, purple negative. The value is black where p < 0.05 and grey otherwise. A frame marks |ρ| ≥ 0.7, and a
   grey cell was not tested; the key beside the colour bar shows each. With many cohorts the cells are too narrow

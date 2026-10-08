@@ -237,15 +237,48 @@ def test_the_overview_hatches_imprecise_cells(ds, tmp_path):
     assert hatched(FAST.replace(imprecise_ci_ratio=0)) == 0
 
 
-def test_the_correlation_grid_keeps_every_genes_expression_rows(ds):
-    """With too few rows for everything: each gene's expression rows first, then the strongest pairs."""
+def _pairs(fig) -> set[tuple[str, str]]:
+    """The (left, right) labels of a correlation figure's pair rows: the texts level with each "×"."""
+    at = {}
+    for t in fig.texts:
+        at.setdefault(round(t.get_position()[1], 6), []).append(t)
+    return {tuple(t.get_text() for t in sorted(row, key=lambda t: t.get_position()[0]) if t.get_text() != "×")
+            for row in at.values() if any(t.get_text() == "×" for t in row)}
+
+
+def test_the_correlation_grid_shares_its_rows(ds):
+    """With too few rows for everything: the best-ranked events' expression rows take at most half while pairs wait,
+    and each gene's strongest pairs the rest, the genes taking turns; fewer pairs leave the expression rows more."""
     syn3 = ["SYN3:AFE:0001", "SYN3:AFE:0002", "SYN3:ALE:0001", "SYN3:ALE:0002"]
     c = correlations(ds, events=SYN1 + syn3)
     ranked = pd.DataFrame({"rank": range(1, 8), "event_id": syn3 + SYN1, "gene": ["SYN3"] * 4 + ["SYN1"] * 3,
                            "label": [e.split(":", 1)[1] for e in syn3 + SYN1],
                            "event_type": [e.split(":")[1] for e in syn3 + SYN1]})
-    fig = correlation_figure(c, ranked, FAST, max_rows=9)                        # 7 expression rows + 2 pairs
+    rho = c[c.kind.eq("event")].groupby(["event_id", "partner"]).rho.apply(lambda r: r.abs().max())
+    lab = dict(zip(ranked.event_id, ranked.label))
+    strongest = {g: [tuple(lab[e] for e in ab) for ab in rho[[a.startswith(g) for a, _ in rho.index]]
+                     .sort_values(ascending=False).index] for g in ("SYN3", "SYN1")}
+    fig = correlation_figure(c, ranked, FAST, max_rows=9)        # 7 expression rows, 9 pairs: 4 and 5 shown
     texts = _texts(fig)
-    assert {"with SYN3 expression", "with SYN1 expression"} <= set(texts)
-    assert texts.count("×") == 2 and {"AFE:0002", "ALE:0002"} <= set(texts)      # the two pairs near -1
-    assert any("9 of 16 rows" in t for t in texts)
+    assert "with SYN3 expression" in texts and "with SYN1 expression" not in texts
+    want = strongest["SYN3"][:3] + strongest["SYN1"][:2]                          # the genes take turns
+    assert {tuple(sorted(p)) for p in _pairs(fig)} == {tuple(sorted(p)) for p in want}
+    assert {("AFE:0001", "AFE:0002"), ("ALE:0001", "ALE:0002")} <= _pairs(fig)   # the two pairs near -1
+    assert any("9 of 16 rows: the best-ranked events' expression rows, then each gene's strongest pairs" in t
+               for t in texts)
+    few = c[c.kind.eq("expression") | c.event_id.isin(SYN1)]                      # 7 expression rows, 3 pairs
+    texts = _texts(fig := correlation_figure(few, ranked, FAST, max_rows=8))      # 5 of the 7, and every pair
+    assert {"with SYN3 expression", "with SYN1 expression"} <= set(texts) and len(_pairs(fig)) == 3
+    assert any("8 of 10 rows: the best-ranked events' expression rows, then every pair" in t for t in texts)
+    mixed = ranked.assign(rank=[1, 5, 6, 7, 2, 3, 4])                            # SYN3's events 1 and 5 to 7
+    texts = _texts(correlation_figure(few, mixed, FAST, max_rows=8))
+    assert {"1", "2", "3", "4", "5", "AFE:0001", "AFE:0002"} <= set(texts)      # ranks 1 to 5
+    assert not {"6", "7", "ALE:0001", "ALE:0002"} & set(texts)                   # 6 and 7 left out
+    texts = _texts(fig := correlation_figure(c[c.event_id.isin(syn3)], ranked, FAST, max_rows=8))   # 4 and 6
+    assert len(_pairs(fig)) == 4
+    assert any("8 of 10 rows: every expression row, then each gene's strongest pairs" in t for t in texts)
+    texts = _texts(correlation_figure(c[c.kind.eq("event")], ranked, FAST, max_rows=5))   # no expression rows
+    assert any("5 of 9 rows: each gene's strongest pairs (all" in t for t in texts)
+    assert not any(" rows: " in t for t in _texts(correlation_figure(c, ranked, FAST)))   # all 16 fit
+    assert correlation_figure(c, ranked, FAST, max_rows=0) is None                # nothing to draw
+    assert correlation_figure(c, ranked.assign(event_id="other"), FAST) is None

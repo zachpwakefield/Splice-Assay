@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The gene map's triangle names its events.** Each row's event is named at the row's end, on the diagonal (where
+  its rank was), and each column's under the column, so a cell's pair reads without counting rows.
+- **The correlation figure keeps room for pairs.** It shows at most 60 rows, and a gene's expression rows came
+  first, so a gene with 60 or more events (TCGA SNHG17) showed no pairs at all. The expression rows of the
+  best-ranked events (across genes) now take at most half of the rows, more when there are fewer pairs, and each
+  gene's strongest pairs the rest. The caption names only what is shown.
 - **Evidence grades choose the page cohorts.** Each event × cohort gets three lines: Cox (adjusted where fitted;
   an imprecise fit is not significant but keeps its direction), KM, and the tumour–normal change. Each line has a direction and whether it is
   significant. They combine into a grade:

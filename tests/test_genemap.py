@@ -101,7 +101,20 @@ def test_gene_map_rows_and_layers(ds, probed, gtf_path):
     assert "|ρ| ≥ 0.7" not in texts
     from splice_assay.correlation import correlations
     c = correlations(ds, events=order)
-    with_c = _texts(gene_map(ds, "SYN1", ranked, cells, "OS", FAST, gtf=str(gtf_path), corr=c))
+    fig_c = gene_map(ds, "SYN1", ranked, cells, "OS", FAST, gtf=str(gtf_path), corr=c)
+    with_c = _texts(fig_c)
+    tri = [t for a in fig_c.axes for t in a.texts if t.get_text() in labels]
+    assert [t.get_text() for t in tri if t.get_rotation() == 90] == labels[:-1]  # each column's event, under it
+    assert [t.get_text() for t in tri if t.get_rotation() == 0] == labels        # each row's, at its end
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    canvas = FigureCanvasAgg(fig_c)
+    canvas.draw()
+    r = canvas.get_renderer()
+    under = [t.get_window_extent(r) for t in tri if t.get_rotation() == 90]
+    cells_y0 = min(p.get_window_extent(r).y0 for p in tri[0].axes.patches)
+    bar = fig_c.axes[-1].get_window_extent(r)                                     # the ρ colour bar
+    assert all(bar.y1 < u.y0 and u.y1 < cells_y0 + 1 for u in under)             # between the cells and the bar
+    assert all(t.get_window_extent(r).x1 < fig_c.bbox.x1 for t in tri)           # inside the figure
     assert {"ρ between events", "Spearman ρ, median of cohorts"} <= set(with_c) and "expr." not in with_c
     assert "|ρ| ≥ 0.7" in with_c and "pale columns" not in " ".join(with_c)
     pairs = c[c.kind.eq("event") & c.corr_status.eq("tested")]
@@ -111,6 +124,31 @@ def test_gene_map_rows_and_layers(ds, probed, gtf_path):
     bare = _texts(gene_map(ds, "SYN1", ranked, cells, "OS", FAST))                # no GTF, no expression
     assert texts.count("SYN1") == 2 and bare.count("SYN1") == 1                   # title, then the gene's row
     assert any("no gene model" in t for t in bare)
+
+
+def test_the_hr_bar_title_stays_clear_of_the_triangle(ds):
+    """The HR colour bar's title is centred under the strip: in IQR units, with HIT index events and the gene's
+    expression it is long, and still ends before the triangle's labels and ρ bar."""
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+    from splice_assay.analysis import analyze_expression
+    from splice_assay.correlation import correlations
+    s = FAST.replace(psi_hr_unit="iqr")
+    ids = list(ds.events.index[ds.events.gene.eq("SYN3")])
+    cells = combine(sa.analyze(ds, events=ids, endpoints=["OS"], settings=s), None, "OS")
+    gex = analyze_expression(ds, genes=["SYN3"], endpoints=["OS"], settings=s).cells()
+    fig = gene_map(ds, "SYN3", rank_events(cells, ds, 0.05), cells, "OS", s, gex_cells=gex,
+                   corr=correlations(ds, events=ids, settings=s))
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()                                                                 # places the bars' titles
+    r = canvas.get_renderer()
+    hr, rho = [a for a in fig.axes if a.get_xlabel()]
+    assert hr.get_xlabel() == "HR per IQR of PSI or HIT index (expression: per SD)"
+    title = hr.xaxis.label.get_window_extent(r)
+    labels = set(ds.events.label[ids])
+    tri = [t for a in fig.axes for t in a.texts if t.get_text() in labels] + rho.get_xticklabels()
+    assert sum(t.get_rotation() == 90 for t in tri) == len(ids) - 1               # the triangle's column labels
+    assert title.x1 < rho.get_window_extent(r).x0 and not any(t.get_window_extent(r).overlaps(title) for t in tri)
 
 
 def test_rarely_observed_events_are_left_out(ds, probed):
