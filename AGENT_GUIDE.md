@@ -178,6 +178,9 @@ host gene's expression, and each pair of events of one gene (`correlations.csv`,
 - **Two events, |ρ| high:** one isoform change measured twice; count their hits once. Two alternative first (last)
   exons of one gene sum to 1, so their ρ near −1 is built in, not a finding; with three or more, a pair's ρ is no
   longer fixed by construction.
+- **Not tested** (`corr_status`): `too_few_patients` (under 20 with both values), `constant`, or `few_off_modal`
+  (a value differs from its most common value in under 10 patients, the survival tests' gate). Such a pair has no ρ;
+  do not read its absence as "no correlation".
 
 ### Optional: protein changes
 
