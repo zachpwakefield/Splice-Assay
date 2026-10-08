@@ -713,8 +713,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--endpoint", action="append",
                     help="endpoint to probe, e.g. OS (repeat for more, or 'all'; each gets its own folder; default OS)")
     sp.add_argument("--gtf", help="GTF for the gene track (default: $SPLICE_ASSAY_GTF)")
-    sp.add_argument("--top", type=_top, default=3,
-                    help="cohorts shown per page: a number or 'all' (default 3; the forest always shows every cohort)")
+    sp.add_argument("--top", type=_top, default=None,
+                    help="cohorts shown per page: by default every cohort graded A+ to C (at most 6; see report.md), "
+                         "or a number N (the N most promising by p) or 'all'; the forest always shows every cohort")
     sp.add_argument("--max-pages", type=int, default=30, help="pages for the best-ranked events (default 30)")
     hit_arg(sp)
     sp.add_argument("--no-adjust", action="store_true", help="no adjusted model (default: age + sex + stage found)")

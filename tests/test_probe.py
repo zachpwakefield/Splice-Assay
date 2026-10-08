@@ -330,6 +330,107 @@ def test_ranking_counts_low_power_hits_last(ds):
     assert pick_cohorts(cells, ev[1], 3) == ["A", "B", "C"] and pick_cohorts(cells, ev[3], 2) == ["C", "A"]
 
 
+def _graded(cox_p=0.5, hr=1.5, km_p=0.5, lhr=1.5, d=0.2, hit=False, ci=(1.1, 2.0), paired=True, cohort="X"):
+    """A probe cell with a base Cox fit, a KM test and a within-patient change (no adjusted model)."""
+    return dict(event_id="e", cohort=cohort, endpoint="OS", cox_status="tested", cox_p=cox_p, hr_per_sd=hr,
+                ci_low_sd=ci[0], ci_high_sd=ci[1], cox_low_power=False, km_status="tested", km_p=km_p,
+                logrank_hr=lhr, paired_status="tested" if paired else "too_few_pairs", paired_delta_median=d,
+                paired_hit=hit, unpaired_status="too_few_samples")
+
+
+def test_evidence_grades():
+    """Cox (as the overview shows it), KM and the group change: their directions and significance give the grade."""
+    from splice_assay.probe import evidence
+    s = sa.Settings()
+    g = (lambda **kw: evidence(pd.Series(_graded(**kw)), s))                   # noqa: E731
+    assert g(cox_p=0.01, km_p=0.01) == ("A", "Cox ↑  KM ↑  T/N (↑)")
+    assert g(cox_p=0.01, km_p=0.01, hit=True) == ("A+", "Cox ↑  KM ↑  T/N ↑")
+    assert g(cox_p=0.01, km_p=0.01, hr=0.6, lhr=0.7, d=-0.2, hit=True)[0] == "A+"     # all down: one story too
+    assert g(cox_p=0.01)[0] == "B" and g(km_p=0.01)[0] == "C" and g(km_p=0.01, hit=True)[0] == "C+"
+    assert g(cox_p=0.01, d=-0.2) == ("D", "Cox ↑  KM (↑)  T/N (↓)")          # the tumour shift goes with lower hazard
+    assert g(cox_p=0.01, d=-0.2, hit=True)[0] == "E"                         # significantly so
+    assert g(cox_p=0.01, km_p=0.01, lhr=0.7)[0] == "E"                       # KM against Cox
+    assert g(cox_p=0.01, ci=(0.3, 9.0)) == ("", "Cox (↑)  KM (↑)  T/N (↑)")   # an imprecise fit does not count
+    assert g(cox_p=0.01, paired=False) == ("B", "Cox ↑  KM (↑)  T/N –")      # no group test: it cannot disagree
+    assert g(hit=True)[0] == "" and g()[0] == ""                             # no survival signal
+    both = dict(_graded(cox_p=0.01, d=0.02), unpaired_status="tested", unpaired_delta_median=-0.15, unpaired_hit=True)
+    assert evidence(pd.Series(both), s) == ("E", "Cox ↑  KM (↑)  T/N ↓")     # the all-samples hit decides
+    assert g(cox_p=0.01, d=1e-17) == ("B", "Cox ↑  KM (↑)  T/N =")           # rounding noise has no direction
+    assert g(cox_p=0.01, d=-0.03) == ("B", "Cox ↑  KM (↑)  T/N =")           # a tiny change neither (under 0.05)
+    assert g(cox_p=0.01, lhr=0.95) == ("B", "Cox ↑  KM =  T/N (↑)")          # nor an HR within 1.1-fold of 1
+    assert g(km_p=0.01, hr=0.97) == ("C", "Cox =  KM ↑  T/N (↑)")
+    assert evidence(pd.Series(_graded(cox_p=0.01, lhr=0.95)), s.replace(evidence_hr_band=1))[0] == "D"
+    hit_index = pd.Series(_graded(cox_p=0.01, d=-0.08))                     # the HIT index: twice PSI's scale
+    assert evidence(hit_index, s, 2.0)[0] == "B" and evidence(hit_index, s)[0] == "D"
+    with pytest.raises(ValueError, match="evidence_hr_band"):
+        sa.Settings(evidence_hr_band=0.9)
+    with pytest.raises(ValueError, match="evidence_min_delta"):
+        sa.Settings(evidence_min_delta=float("nan"))
+    for lhr, o, e, mark in [(0.0, 0, 3.2, "↓"), (np.nan, 9, 5.8, "↑")]:     # an arm without events: no HR
+        one_arm = pd.Series(dict(_graded(km_p=0.001, lhr=lhr), o_high=o, e_high=e))
+        assert evidence(one_arm, s) == ("C" if mark == "↑" else "D", f"Cox (↑)  KM {mark}  T/N (↑)")
+    assert g(cox_p=0.01, km_p=0.01, hit="True")[0] == "A+" and g(cox_p=float("nan"), km_p=0.01)[0] == "C"
+    adj = dict(_graded(cox_p=0.5, hr=1.5), adj_cox_status="tested", adj_cox_p=0.01, adj_hr_per_sd=0.6,
+               adj_ci_low_sd=0.4, adj_ci_high_sd=0.9, adj_cox_low_power=False)
+    assert evidence(pd.Series(adj), s) == ("D", "Cox ↓  KM (↑)  T/N (↑)")    # the adjusted fit is the one shown
+    iqr = dict(_graded(cox_p=0.01), hr_per_iqr=np.nan, ci_low_iqr=np.nan, ci_high_iqr=np.nan)
+    assert evidence(pd.Series(iqr), s.replace(psi_hr_unit="iqr"))[1].startswith("Cox ↑")   # an IQR of 0
+    wide = dict(iqr, ci_low_sd=0.1, ci_high_sd=22.0)                         # ... and the per-SD CI is 220-fold
+    assert evidence(pd.Series(wide), s.replace(psi_hr_unit="iqr")) == evidence(pd.Series(wide), s) == \
+        ("", "Cox (↑)  KM (↑)  T/N (↑)")
+
+
+def test_page_cohorts_are_the_graded_ones():
+    """Every cohort graded A+ to C, best grade first (then by p), at most cohorts_per_page; else the strongest."""
+    from splice_assay.probe import add_evidence, page_cohorts
+    s = sa.Settings()
+    cells = add_evidence(pd.DataFrame([
+        _graded(cohort="P", cox_p=0.001),                                     # B, the smallest p
+        _graded(cohort="V", cox_p=0.01),                                      # B: after P
+        _graded(cohort="Q", cox_p=0.02, km_p=0.01),                           # A
+        _graded(cohort="R", km_p=0.03),                                       # C
+        _graded(cohort="S", cox_p=0.04, km_p=0.04, hit=True),                 # A+
+        _graded(cohort="T", cox_p=0.002, d=-0.3),                             # D: not on the page
+        _graded(cohort="U", cox_p=0.3)]), s)                                  # no grade
+    assert list(cells.columns[:5]) == ["event_id", "cohort", "endpoint", "evidence", "evidence_lines"]
+    assert cells.evidence.tolist() == ["B", "B", "A", "C", "A+", "D", ""]
+    assert page_cohorts(cells, "e", s) == (["S", "Q", "P", "V", "R"], "")
+    assert page_cohorts(cells, "e", s.replace(cohorts_per_page=2)) == (["S", "Q"], "2 of 5 cohorts graded A–C")
+    none = add_evidence(pd.DataFrame([_graded(cohort="P", cox_p=0.3), _graded(cohort="Q", cox_p=0.002, d=-0.3)]), s)
+    assert page_cohorts(none, "e", s) == (["Q"], "no cohort graded A–C")    # the strongest by p
+
+
+def test_probe_pages_show_the_graded_cohorts(ds, tmp_path):
+    """By default each page shows its event's cohorts graded A+ to C; --top N keeps the N most promising by p. The
+    grades are in cells.csv, counted in events.csv and explained in the report."""
+    logged = []
+    res = probe(ds, genes=["SYN1"], settings=FAST, out_dir=tmp_path / "a", max_pages=3, log=logged.append)
+    c = pd.read_csv(res.paths["cells"], keep_default_na=False)
+    assert {"evidence", "evidence_lines"} <= set(c.columns)
+    graded = c[c.evidence.isin(["A+", "A", "B+", "B", "C+", "C"])]
+    for e in res.events.itertuples():
+        mine = graded[graded.event_id.eq(e.event_id)]
+        assert e.evidence_a_c == len(mine)
+        line = next(x for x in logged if x.startswith("  page") and f": {e.event_id} (" in x)
+        shown = line.split("(", 1)[1].rstrip(")").split(", ")
+        assert set(shown) == set(mine.cohort) if len(mine) else len(shown) == 1
+    report = res.paths["report"].read_text()
+    assert "**Evidence grades**" in report and "| Graded A–C |" in report
+    assert "every cohort graded A+ to C" in report
+    logged.clear()
+    probe(ds, genes=["SYN1"], settings=FAST, out_dir=tmp_path / "b", max_pages=1, top=2, log=logged.append)
+    assert len(next(x for x in logged if x.startswith("  page")).split("(", 1)[1].split(", ")) == 2
+    logged.clear()                                                          # named cohorts: still graded
+    named = probe(ds, genes=["SYN1"], cohorts=["COH3", "COH4"], settings=FAST, out_dir=tmp_path / "c", max_pages=3,
+                  log=logged.append)
+    for e in named.events.itertuples():
+        line = next(x for x in logged if x.startswith("  page") and f": {e.event_id} (" in x)
+        ok = named.cells[named.cells.event_id.eq(e.event_id) & named.cells.evidence.isin(["A+", "A", "B+", "B", "C+",
+                                                                                           "C"])]
+        shown = line.split("(", 1)[1].rstrip(")").split(", ")
+        assert set(shown) == set(ok.cohort) if len(ok) else len(shown) == 1
+
+
 def test_panel_rows_show_the_page_model_when_nothing_is_left_to_add(tmp_path, capsys):
     """--covariate age, sex and stage already on the page: the model rows show that model (nothing is found to add)."""
     from splice_assay import example

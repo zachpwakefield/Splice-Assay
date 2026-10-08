@@ -24,7 +24,7 @@ def model_terms(ds: Dataset, event: str, cohort: str, endpoint: str, model: CoxM
                 settings: Settings | None = None, results: Results | None = None) -> tuple[pd.Series, pd.DataFrame]:
     """The survival row and the Cox terms of one cell (raises when the model was not fitted)."""
     res = results if results is not None else analyze(ds, events=[event], cohorts=[cohort], endpoints=[endpoint],
-                                                     settings=settings, model=model)
+                                                     settings=settings, model=model, cox_only=True)
     sv = res.survival
     row = sv[sv.event_id.eq(event) & sv.cohort.eq(cohort) & sv.endpoint.eq(endpoint)]
     if row.empty:

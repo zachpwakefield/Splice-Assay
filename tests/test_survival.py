@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import splice_assay as sa
 from splice_assay import Settings
 from splice_assay.plot.model import not_fitted
 from splice_assay.stats.survival import CoxModel, fit_cox, survival_cell
@@ -486,3 +487,18 @@ def test_a_minimum_of_events_per_term_is_opt_in():
     assert r3["cox_status"] == "too_few_events_per_term" and r3["cox_model"] == "PSI + age + sex"   # no penalty named
     assert not_fitted(pd.Series(r3), Settings(cox_min_events_per_term=need)) == \
         f"too few events per term ({r['cox_events']} events for 3 terms; needs {need:g} per term)"
+
+
+def test_cox_only_gives_the_same_cox_fits(ds):
+    """analyze(cox_only=True), the probe's adjusted pass: the same Cox columns and terms as the full analysis, without
+    the group and KM tests."""
+    from splice_assay.probe import ADJ_COLS
+    m = sa.CoxModel().with_clinical(["age", "sex", "stage"])
+    ev = ["SYN1:SE:1", "SYN1:A3SS:1", "SYN1:RI:1"]
+    full = sa.analyze(ds, events=ev, endpoints=["OS"], model=m)
+    fast = sa.analyze(ds, events=ev, endpoints=["OS"], model=m, cox_only=True)
+    cols = ["event_id", "cohort"] + [c for c in ADJ_COLS if c in full.survival]
+    pd.testing.assert_frame_equal(fast.survival[cols], full.survival[cols])
+    pd.testing.assert_frame_equal(fast.cox_terms, full.cox_terms)
+    assert fast.groups.empty and set(fast.survival.km_status) <= {"not_run", "coverage_gate"}
+    assert full.survival.km_status.eq("tested").any()

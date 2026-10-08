@@ -449,7 +449,8 @@ def _terms(fit: dict, meta: list, s: Settings) -> tuple[list[dict], list[str]]:
 # ============================================================================================ one cohort
 def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, event: np.ndarray,
                   host_base: np.ndarray | None, s: Settings, model: CoxModel | None = None,
-                  clinical: pd.DataFrame | None = None, quantity: str = "PSI") -> tuple[dict, list[dict]]:
+                  clinical: pd.DataFrame | None = None, quantity: str = "PSI",
+                  km: bool = True) -> tuple[dict, list[dict]]:
     """KM and Cox statistics of one event in one cohort for one endpoint, and the Cox terms.
 
     x_base      PSI over the cohort's survival samples (NaN = missing)
@@ -457,6 +458,7 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     time, event aligned with ep_pos
     host_base   host-gene expression over the survival samples, or None
     clinical    the model's clinical columns over the survival samples (rows aligned with x_base), or None
+    km          False: no KM test (km_status 'not_run'), for a second model over cells already tested
     """
     model = model or CoxModel()
     x_base = np.asarray(x_base, float)
@@ -478,7 +480,9 @@ def survival_cell(x_base: np.ndarray, ep_pos: np.ndarray, time: np.ndarray, even
     # ---------------------------------------------------------------- KM
     r.update(km_n=len(x), n_low=int((~high).sum()), n_high=int(high.sum()), events_low=int(e[~high].sum()),
              events_high=int(e[high].sum()))
-    if low_var:
+    if not km:
+        r["km_status"] = "not_run"
+    elif low_var:
         r["km_status"] = "low_psi_variance"
     elif not km_gate(high, e, s):
         r["km_status"] = "too_few_patients_or_events"

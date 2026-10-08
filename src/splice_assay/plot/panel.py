@@ -152,7 +152,8 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                 highlight_legend: str | None = None, focus=None, cox_name: str = "Cox",
                 endpoint_label: str | None = None, out_dir=None, stem: str | None = None,
                 results: Results | None = None, detail=None, layout: str = "auto", proteins=None,
-                detail_results: Results | None = None, part: tuple | None = None) -> Panel:
+                detail_results: Results | None = None, part: tuple | None = None, shade_marks: bool = True,
+                row_notes: dict | None = None, title_note: str | None = None) -> Panel:
     """Draw (and, with out_dir, save) the panel of one or two events of one gene for one endpoint.
 
     events           one or two event IDs of the same gene
@@ -176,6 +177,9 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                      under the schematic with the suggested protein of each form, when there is a good match
     part             (i, n) for page i of n when the cohorts are split over several pages (`page_parts`): the title
                      says so and the default stem ends in _p<i>of<n>; each page keeps the full forest
+    shade_marks      False: the forest shades only the cells shown at left, not every highlighted one
+    row_notes        {(event, cohort): text} written after each shown cell's heading (e.g. its lines of evidence)
+    title_note       a few words added to the title (e.g. how its cohorts were chosen)
     """
     import matplotlib
     from matplotlib.figure import Figure
@@ -240,7 +244,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     if lacking:
         raise InputError(f"results= does not cover cohort(s) {', '.join(lacking)} for {endpoint}; leave results out "
                          "to analyze them here")
-    shade = set(marks) | set(focus)
+    shade = (set(marks) if shade_marks else set()) | set(focus)
     labels = [ev.at[e, "label"] for e in events]
     glab = dict(case=s.case_label or ds.labels["case"], reference=s.reference_label or ds.labels["reference"])
     ylabel = endpoint_label or ENDPOINT_NAMES.get(endpoint, endpoint)
@@ -314,7 +318,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
     if detail_model is not None and detail_results is None:
         same = detail_model == results.model and results.settings == s
         detail_results = results if same else analyze(ds, events=gene_ids, endpoints=[endpoint], settings=s,
-                                                      model=detail_model)
+                                                      model=detail_model, cox_only=True)
     elif detail_model is not None and detail_results.model != detail_model:
         raise InputError(model_mismatch(detail_model, detail_results.model, "detail_results="))
     band = _model_band(ds, focus, endpoint, s, detail_model, W, detail_results) if detail_model is not None else None
@@ -359,9 +363,12 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         second.append(("split", "KM split"))
     if has_ref:
         second += [("pd", "Paired Δ"), ("ud", "Unpaired Δ")]
-    band_text = highlight_legend or ((f"{highlight_title} cell (letter: {highlight_title.lower()})" if highlight_title
+    mark_text = highlight_legend or ((f"{highlight_title} cell (letter: {highlight_title.lower()})" if highlight_title
                                       else "Highlighted cell") if marks else "Cohort shown at left")
+    band_text = mark_text if shade_marks else "Cohort shown at left"
     second += [("hs", f"{cox_name} p < {s.alpha:g}"), ("hn", f"{cox_name} p ≥ {s.alpha:g}"), ("band", band_text)]
+    if any(marks.values()) and not shade_marks:             # the letters mark other cells than the shading
+        second.append(("mark", mark_text))
     if band is not None and any(c["disp"] for c in band["cells"]):     # the model rows' other terms
         second += [("ts", f"Model term p < {s.alpha:g}"), ("tn", f"p ≥ {s.alpha:g}")]
     if _q_marked(focus, fcoh, tn, sv, band, s):
@@ -397,7 +404,7 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
         shown = list(dict.fromkeys(c for _, c in focus))
         sub = (ds.notes or {}).get("subset")
         tail = [endpoint] + ([f"subset: {_subset_name(sub)}"] if sub else []) + (
-            [f"page {part[0]} of {part[1]}"] if part else [])
+            [f"page {part[0]} of {part[1]}"] if part else []) + ([title_note] if title_note else [])
         title_rest = " · ".join([_and(labels), _and(shown)] + tail)
         if tw + S.text_width(title_rest, 8.5, weight="bold") > W - 0.15:     # too many to list: count them
             title_rest = " · ".join([_and(labels), f"{len(shown)} cohorts"] + tail)
@@ -434,6 +441,11 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                                       color=(S.INK, S.SECOND)[events.index(e)]))
                 hx = 0.27
             fig.text(fx(hx), fy(y_row + 0.02), " · ".join(head), fontsize=7.2, fontweight="bold", ha="left", va="top")
+            if (row_notes or {}).get((e, c)):
+                fig.text(fx(hx + S.text_width(" · ".join(head), 7.2, weight="bold") + 0.12), fy(y_row + 0.03),
+                         row_notes[(e, c)], fontsize=6.2, color=S.INK2, ha="left", va="top")
+                rows.append(dict(panel="printed", tag=f"{e}|{c}", what="row note", value=row_notes[(e, c)],
+                                 source="row_notes"))
             tag = f"{e}|{c}"
             v = ds.psi.loc[e]
             if has_ref:
@@ -526,11 +538,18 @@ def event_panel(ds: Dataset, events, cohorts, endpoint: str, *, settings: Settin
                     fig.text(fx(x + 0.08), yy, S.Q_MARK, fontsize=7.5, color=S.INK, ha="center", va="center")
                 elif kind == "band":
                     fig.add_artist(Rectangle((fx(x), yy - 0.05 / H), fx(0.16), 0.10 / H, facecolor=S.PAPER, lw=0))
-                    if any(marks.values()):                     # the first label present, in sorted order
+                    if shade_marks and any(marks.values()):     # the first label present, in sorted order
                         lab0 = sorted(v for v in marks.values() if v)[0]
                         fig.add_artist(Rectangle((fx(x + 0.04), yy - 0.04 / H), fx(0.08), 0.08 / H, lw=0,
                                                  facecolor=mark_colors.get(lab0, S.HIGHLIGHT.get(
                                                      lab0, S.HIGHLIGHT_DEFAULT))))
+                elif kind == "mark":                            # a letter as the forest draws it
+                    lab0 = sorted(v for v in marks.values() if v)[0]
+                    fig.add_artist(Rectangle((fx(x + 0.03), yy - 0.05 / H), fx(0.10), 0.10 / H, lw=0,
+                                             facecolor=mark_colors.get(lab0, S.HIGHLIGHT.get(lab0,
+                                                                                             S.HIGHLIGHT_DEFAULT))))
+                    fig.text(fx(x + 0.08), yy, lab0, fontsize=5.0, ha="center", va="center", fontweight="bold",
+                             color=S.INK if lab0 in S.DARK_LABELS else "white")
                 else:
                     mk = "o" if kind in ("pd", "ud") else "s" if kind in ("ts", "tn") else "D"
                     fig.add_artist(Line2D([fx(x + 0.08)], [yy], marker=mk, ms=3.6 if mk == "o" else 3.2, ls="",

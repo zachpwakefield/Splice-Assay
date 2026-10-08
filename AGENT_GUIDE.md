@@ -286,7 +286,7 @@ splice-assay panel DATA --event EVENT_ID --out OUT [--cohort A --cohort B ...] [
 
 | Setting | Default | Change with |
 |---|---|---|
-| Cohorts | all (pages pick the most promising 3) | `--cohort`, `--top N` or `--top all` |
+| Cohorts | all (probe pages: the cohorts graded A+ to C, at most 6; `panel`: the most promising 3) | `--cohort`, `--top N` or `--top all` |
 | Endpoint | OS | `--endpoint` (repeatable in `probe`, or `all`) |
 | Subset | every patient | `--keep FILE`, `--where COLUMN=VALUE` |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |

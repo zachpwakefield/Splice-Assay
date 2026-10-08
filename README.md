@@ -308,8 +308,8 @@ It writes:
 | File | Content |
 |---|---|
 | `report.md` | What was run, how many p < 0.05 chance would give, and the ranked events with links to their pages |
-| `events.csv` | One row per event, ranked: significant cohorts (adjusted, base, with directions), group hits, best cohort |
-| `cells.csv` | One row per event × cohort: every statistic, base and adjusted, with BH q values within each gene |
+| `events.csv` | One row per event, ranked: significant cohorts (adjusted, base, with directions), group hits, cohorts graded A+ to C, best cohort |
+| `cells.csv` | One row per event × cohort: its evidence grade, every statistic, base and adjusted, with BH q values within each gene |
 | `overview.png` | Events × cohorts: HR colour, p < 0.05 dot, group-hit frame, a key to the marks; imprecise fits (95% CI over 8-fold, or under 20 events) pale and hatched; at the right of each row its hits against chance and their directions; with an expression table, the host gene's own expression in a row of its own |
 | `gene_map_GENE.png` | Per gene of the best-ranked events (at most 20): its model (with `--gtf`) and its probed events observed in enough samples, 5′ to 3′, each beside its cells of the overview; with `--correlation`, the median ρ between its events |
 | `pages/`, `probe.pdf` | One assay page per ranked, measurable event, at most 30 (`--max-pages N`), then the gene's expression page (`GENE_expression.png`, with an expression table); all of them in one PDF, after the overview and the gene maps (and the correlation figure) |
@@ -325,10 +325,37 @@ Cox counted only in fits that are not low power (at least 20 events):
 5. the Cox hits in low-power fits (‡), adjusted, then base;
 6. the p of the best cohort: adjusted Cox, else base Cox, else KM (when no Cox model can be fitted).
 
-Each page shows that event's most promising cohorts (`--top`, default 3; `--top all` shows every cohort with a
-test, one row each) and every cohort in the forest. The best cohort and the page's cohorts are those with Cox
-p < 0.05 in a fit that is not low power, then in a low-power fit, then the other fits (those not low power first),
-each by adjusted Cox p.
+Each page shows the event's cohorts graded A+ to C (below), best grade first, at most 6, and every cohort in the
+forest, where each graded cohort carries its letter. An event with no such cohort shows its strongest one, and its
+title says "no cohort graded A–C". `--top N` shows the N most promising cohorts instead and `--top all` every cohort
+with a test. The best cohort, and the order of `--top N`, are those with Cox p < 0.05 in a fit that is not low
+power, then in a low-power fit, then the other fits (those not low power first), each by adjusted Cox p.
+
+**Evidence grades.** Each event × cohort gets three lines of evidence, written on its page row as e.g.
+"Cox ↑  KM (↑)  T/N ↑":
+- **Cox:** the adjusted model where fitted, else the base model. An imprecise fit (a 95% CI over 8-fold, or under
+  20 events) is not significant here, though its direction still counts.
+- **KM:** the log-rank test.
+- **T/N:** the tumour–normal change. It counts when it is a group hit in either test, with that hit's direction
+  (within patients first); otherwise its direction comes from the within-patient test where it ran, else all
+  samples.
+
+Each line is ↑ or ↓ when significant, in parentheses when not, = with no direction and – when not tested. ↑ means
+a higher hazard with higher PSI (Cox), in the high arm (KM), or PSI higher in tumours (T/N). All ↑, or all ↓, tells
+one story: the tumour's shift goes with a higher hazard.
+- **A:** Cox and KM p < 0.05.
+- **B:** Cox p < 0.05.
+- **C:** KM p < 0.05.
+
+A, B and C allow no line pointing the other way, and **+** adds a significant T/N change in the same direction.
+- **D:** a survival test p < 0.05 while another line points the other way.
+- **E:** significant lines in opposite directions.
+
+A line that is not significant and tiny has no direction (=) and counts neither way: an HR within 1.1-fold of 1,
+or a PSI change under 0.05 (0.10 in the HIT index; settings `evidence_hr_band`, `evidence_min_delta`). A missing
+T/N test (no normals) does not count against a cohort either. The grades are in `cells.csv` (`evidence`,
+`evidence_lines`), each event's count of A+ to C cohorts in `events.csv` (`evidence_a_c`, best: `evidence_best`) and
+in the report. A grade describes one cohort and is not corrected for testing many.
 
 Pages go to the best-ranked measurable events, at most 30; an event among them without coordinates to draw gets none.
 `--max-pages N` draws more or fewer, and a large N draws every one. `events.csv` and `cells.csv` hold every event
@@ -379,7 +406,7 @@ annotation, and checks against SpliceImpactR.
 
 | Setting | Default | Change with |
 |---|---|---|
-| Cohorts | all; pages show the most promising 3 | `--cohort`, `--top N` or `--top all` |
+| Cohorts | all; probe pages show the cohorts graded A+ to C (at most 6), `panel` the most promising 3 | `--cohort`, `--top N` or `--top all` |
 | Endpoint | OS (`cox` needs one named) | `--endpoint` (repeatable in `probe`, or `all`) |
 | Groups | tumour vs normal | `--case`, `--reference` |
 | Subset | every patient | `--keep FILE`, `--where COLUMN=VALUE` |
@@ -390,6 +417,7 @@ annotation, and checks against SpliceImpactR.
 | HIT-index events | left out of `analyze` and `probe` (one per exon, a far larger set) | `--include-hit`, or `--event` for one |
 | q mark | `*` for q < 0.05 (filled markers stay p < 0.05) | settings `q_mark_below` |
 | Imprecise cells (probe figures) | pale and hatched when the 95% CI spans over 8-fold or the fit has under 20 events | settings `imprecise_ci_ratio` (0 = never) |
+| Evidence grades (probe pages) | rows for cohorts graded A+ to C; a line not significant and tiny (an HR within 1.1-fold of 1, a PSI change under 0.05) has no direction | settings `evidence_hr_band`, `evidence_min_delta`; `--top N` for the old choice |
 | PSI hazard ratio | per SD of the cohort's PSI | `--hr-unit iqr` (per IQR) |
 | Cohorts per page | 6 (more are split over pages) | settings `cohorts_per_page` |
 | Pages (probe) | the best-ranked measurable events, at most 30 | `--max-pages N` |

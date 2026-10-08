@@ -15,8 +15,7 @@ import numpy as np
 TIME_UNITS = {"days": None, "months": 12.0, "years": 1.0}
 RIDGE_SCOPES = ("none", "clinical", "molecular", "all")
 DRAWING = {"km_max_years", "km_tick_years", "gene_model_min_frac", "nested_biotypes", "exclude_transcript_types",
-           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below",
-           "imprecise_ci_ratio"}
+           "gtf_flank", "case_label", "reference_label", "formats", "dpi", "cohorts_per_page", "q_mark_below"}
 
 
 def _split_rule(v, name: str):
@@ -111,7 +110,13 @@ class Settings:
     q_mark_below: float = 0.05        # a q below this is marked * on the pages, beside the p-based fill (0 = never)
     imprecise_ci_ratio: float = 8.0   # the probe's overview and gene maps draw a survival cell pale and hatched when
                                       # its 95% CI spans more than this ratio (high / low) or its fit is low power,
-                                      # so a large but unreliable HR does not stand out (0 = never)
+                                      # so a large but unreliable HR does not stand out (0 = never); such a Cox fit
+                                      # is not significant in the evidence grades
+    evidence_min_delta: float = 0.05  # evidence grades: a group change (delta median PSI) that is not a hit and
+                                      # smaller than this has no direction (the HIT index: scaled as
+                                      # hit_min_abs_delta to min_abs_delta)
+    evidence_hr_band: float = 1.1     # evidence grades: a Cox or KM HR that is not significant and within this factor
+                                      # of 1 has no direction (1 = every HR but 1 has one)
     formats: tuple = ("svg", "pdf", "png")  # the file types of each figure (any of the three; probe.pdf
                                       # is always written)
     dpi: int = 400                    # resolution of the PNG files
@@ -131,11 +136,13 @@ class Settings:
             if not 0 < getattr(self, name) <= 1:
                 raise ValueError(f"Settings.{name} must lie in (0, 1]")
         for name in ("min_abs_delta", "low_psi_variance_sd", "gex_min_abs_delta", "cox_events_per_term",
-                     "narrow_psi_below", "ph_note_below", "hit_min_abs_delta", "q_mark_below"):
-            if getattr(self, name) < 0:
+                     "narrow_psi_below", "ph_note_below", "hit_min_abs_delta", "q_mark_below", "evidence_min_delta"):
+            if not getattr(self, name) >= 0:                # NaN too
                 raise ValueError(f"Settings.{name} must be >= 0")
         if self.imprecise_ci_ratio != 0 and not self.imprecise_ci_ratio > 1:
             raise ValueError("Settings.imprecise_ci_ratio must be 0 (never) or above 1")
+        if not self.evidence_hr_band >= 1:
+            raise ValueError("Settings.evidence_hr_band must be at least 1")
         if self.cox_ridge not in RIDGE_SCOPES:
             raise ValueError(f"Settings.cox_ridge must be one of {', '.join(RIDGE_SCOPES)}")
         if self.cox_min_events_per_term < 0:

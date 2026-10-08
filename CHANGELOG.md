@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Evidence grades choose the page cohorts.** Each event × cohort gets three lines: Cox (adjusted where fitted;
+  an imprecise fit is not significant but keeps its direction), KM, and the tumour–normal change. Each line has a direction and whether it is
+  significant. They combine into a grade:
+  - **A:** Cox and KM p < 0.05;
+  - **B:** Cox alone;
+  - **C:** KM alone;
+  - A, B and C have no line pointing the other way, and **+** adds a significant tumour–normal change;
+  - **D:** another line points the other way;
+  - **E:** significant lines disagree.
+
+  A line that is not significant and tiny has no direction and counts neither way: an HR within 1.1-fold of 1, or
+  a PSI change under 0.05 (`evidence_hr_band`, `evidence_min_delta`). In TCGA SNHG17 (OS) it took the cohorts
+  graded D from 43 to 11. `imprecise_ci_ratio` now also decides which Cox fits count, so the report lists it when
+  changed.
+
+  Pages now show every cohort graded A+ to C (at most 6) instead of the 3 smallest p. In TCGA SNHG17 that was a
+  third of the page rows: cohorts with p ≥ 0.05, while some events had four or more consistent cohorts. An event with
+  none shows its strongest cohort and says so in its title. The forest letters every graded cohort, and each row's
+  heading gives its grade and lines. New columns: `evidence` and `evidence_lines` in `cells.csv`, `evidence_a_c` and
+  `evidence_best` in `events.csv`; the report explains the grades and counts them. `--top N` keeps the old choice.
+- **Faster pages.** Text is measured with the curves' extremes in closed form instead of numpy root finding (the
+  same widths, about 30× faster, cached). It took most of a page's drawing time, so pages draw several times faster;
+  figures are unchanged pixel for pixel. The adjusted model's pass skips the group and KM tests the base pass
+  already ran (`analyze(cox_only=True)`), with identical results. `model_terms` uses it too, so the survival row it
+  returns has `km_status` "not_run".
 - **Imprecise cells.** The probe overview and gene maps draw a survival cell pale and hatched when its 95% CI
   spans more than 8-fold or its fit has fewer than 20 events (setting `imprecise_ci_ratio`, 0 = never). The most
   extreme HRs often came from such fits (in TCGA TP53, 6 of the 7 darkest OS cells) and drew the eye; their colour

@@ -80,6 +80,9 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
     shades = [S.INK] if n_ev == 1 else [S.INK, S.SECOND]
     pos = axR.get_position()
     W = fig.get_figwidth()
+    marks = [r["mark"] for co in cohorts for r in recs_by_cohort[co] if r["mark"]]
+    fs = 4.9 if n_ev == 2 else 5.6                      # the marks' size; their boxes fit the widest ("A+")
+    bw = max([0.09] + [S.text_width(m, fs, weight="bold") + 0.025 for m in marks]) / W
     axes = [a for a in (axL, axR) if a is not None]
     for j, co in enumerate(cohorts):
         y = n - 1 - j
@@ -97,11 +100,11 @@ def draw(fig, axL, axR, lab_x, mark_x, cohorts, recs_by_cohort, n_ev, alpha, cox
             if r["mark"]:
                 h = 0.8 / n if n_ev == 1 else 0.44 / n
                 yb = pos.y0 + (yy + 0.5) / n * pos.height
-                bw, bh = 0.09 / W, h * pos.height
+                bh = h * pos.height
                 face = colors.get(r["mark"], S.HIGHLIGHT.get(r["mark"], S.HIGHLIGHT_DEFAULT))
                 fig.add_artist(Rectangle((mark_x - bw / 2, yb - bh / 2), bw, bh, transform=fig.transFigure,
                                          facecolor=face, lw=0))
-                fig.text(mark_x, yb, r["mark"], fontsize=4.9 if n_ev == 2 else 5.6, ha="center", va="center",
+                fig.text(mark_x, yb, r["mark"], fontsize=fs, ha="center", va="center",
                          color=S.INK if r["mark"] in S.DARK_LABELS else "white", fontweight="bold")
             if axL is not None:
                 for design, face in (("paired", col), ("unpaired", "white")):

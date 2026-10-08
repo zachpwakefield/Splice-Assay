@@ -5,8 +5,8 @@ For one endpoint (default OS) and every event x cohort, the probe runs the group
 models: the base model (PSI + host expression, the forest's model) and the adjusted model (by default + age + sex +
 stage, found in the clinical table; see clinical.py). Then:
 
-    cells.csv       one row per event x cohort: group tests, KM, base and adjusted Cox, q values (BH within each
-                    gene, per kind of test)
+    cells.csv       one row per event x cohort: its evidence grade (see evidence()), group tests, KM, base and
+                    adjusted Cox, q values (BH within each gene, per kind of test)
     events.csv      one row per event, ranked (see RANKING)
     overview.png    events x cohorts: adjusted HR per IQR or SD (colour; pale and hatched when imprecise), adjusted
                     p < 0.05 (dot), q < 0.05 (*), group hit (frame); right of each row, its cohorts with p < 0.05 of
@@ -15,8 +15,8 @@ stage, found in the clinical table; see clinical.py). Then:
     gene_map_<GENE>.png   per gene: its model (with a GTF) and its probed events observed in enough samples, 5' to 3',
                     each row beside its cells of the overview (the gene's own row: its expression) and, with
                     correlation=True, the median rho between its events (see plot/genemap.py)
-    pages/          one assay page per ranked, measurable event, at most max_pages (the event, its most promising
-                    cohorts, their models, the forest); with an expression table, also the host gene's expression
+    pages/          one assay page per ranked, measurable event, at most max_pages (the event, its cohorts graded
+                    A+ to C, their models, the forest); with an expression table, also the host gene's expression
                     page (<GENE>_expression)
     probe.pdf       the overview, the gene maps, the correlation figure (with correlation=True), every event page in
                     rank order, then the expression page
@@ -162,6 +162,11 @@ def observed(cells: pd.DataFrame, s: Settings) -> set:
     return set(f.index[f >= s.observed_frac])
 
 
+def _grade_rank(g) -> int:
+    """A grade's place in EVIDENCE (best first); no grade last."""
+    return EVIDENCE.index(g) if g in EVIDENCE else len(EVIDENCE)
+
+
 def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "sd") -> pd.DataFrame:
     """One row per event, ranked (RANKING): Cox hits in fits that are not low power first, low-power hits (fewer
     events than Settings.cox_low_power_events) as tie-breakers. `unit`: the HR reported, per "sd" or per "iqr"
@@ -208,7 +213,10 @@ def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "sd"
             best_low_power=_flag(None if b is None else
                                  b.get({"adjusted": "adj_cox_low_power", "base": "cox_low_power"}.get(model, ""))),
             **{f"best_psi_{unit}": np.nan if b is None or model == "KM" else b[f"psi_{unit}"]},
-            min_cox_q=float(t.cox_q.min()) if len(t) else np.nan))
+            min_cox_q=float(t.cox_q.min()) if len(t) else np.nan,
+            **({} if "evidence" not in d else dict(
+                evidence_best=min(d.evidence.dropna(), key=_grade_rank, default=""),
+                evidence_a_c=int(d.evidence.isin(PAGE_GRADES).sum())))))
     ev = pd.DataFrame(rows)
     if ev.empty:
         return ev
@@ -219,6 +227,131 @@ def rank_events(cells: pd.DataFrame, ds: Dataset, alpha: float, unit: str = "sd"
                         kind="stable").drop(columns=["_adj", "_base"]).reset_index(drop=True)
     ev.insert(0, "rank", np.arange(1, len(ev) + 1))
     return ev
+
+
+EVIDENCE = ("A+", "A", "B+", "B", "C+", "C", "D", "E")    # the evidence grades, best first (see evidence())
+PAGE_GRADES = EVIDENCE[:6]                                # the grades that get a row on an event's page
+EVIDENCE_LEGEND = "Evidence grade, A+ to E (see report.md)"
+
+
+def _mark(direction: float, significant: bool) -> str:
+    """One line of evidence: '↑' or '↓' when significant, '(↑)' or '(↓)' when not, '=' with no direction."""
+    m = "↑" if direction > 0 else "↓" if direction < 0 else "="
+    return m if significant and m != "=" else f"({m})" if m != "=" else m
+
+
+def evidence(x, s: Settings, delta_scale: float = 1.0) -> tuple[str, str]:
+    """The evidence grade of one event x cohort cell and its three lines, e.g. ('A', 'Cox ↑  KM ↑  T/N –').
+
+    Cox   the fit the overview shows (adjusted where fitted); significant at p < alpha unless imprecise (95% CI over
+          imprecise_ci_ratio, or low power); ↑ is HR above 1 (higher value, higher hazard)
+    KM    the log-rank test, significant at p < alpha; ↑ is a higher hazard in the high arm
+    T/N   significant when it is a group hit (either test: p < alpha and the minimum change), its direction from the
+          hit (within patients first); else not significant, its direction from the within-patient test where it
+          ran, else all samples; ↑ is the value higher in the case group (tumour), '=' no change at round_decimals
+    An imprecise Cox fit is not significant, but its direction still counts. With no HR per IQR (an IQR of 0), the
+    fit's HR and CI per SD stand in. A line that is not significant has no direction ('=') when its effect is tiny:
+    an HR within Settings.evidence_hr_band of 1, or a change below evidence_min_delta x `delta_scale` (the HIT
+    index's scale against PSI's).
+    Lines in one direction tell one story: the tumour's shift goes with higher hazard (all ↑), or the reverse (all ↓).
+    A: Cox and KM significant; B: Cox significant; C: KM significant; each with no line pointing the other way, and
+    '+' when the T/N change is significant too. D: a survival line significant, another line (not significant)
+    pointing the other way. E: significant lines in opposite directions. '': no survival line significant."""
+    from .plot import grid as G
+    tested, hr, p, _, pale = G.shown_fit(x, s)
+    hr, p = (np.nan if v is None else float(v) for v in (hr, p))
+    if tested and not np.isfinite(hr):                  # no HR per IQR (an IQR of 0): the fit per SD instead
+        pre = "adj_" if x.get("adj_cox_status") == "tested" else ""
+        sd = x.get(f"{pre}hr_per_sd")
+        hr = np.nan if sd is None else float(sd)
+        pale = G.imprecise(x.get(f"{pre}ci_low_sd"), x.get(f"{pre}ci_high_sd"), x.get(f"{pre}cox_low_power"), s)
+    lines = {}
+    band = np.log(s.evidence_hr_band)
+
+    def hr_line(h, sig):                                # an HR's direction, none when tiny and not significant
+        return (np.sign(np.log(h)) if sig or abs(np.log(h)) >= band else 0.0), sig
+    if tested and np.isfinite(p) and np.isfinite(hr) and hr > 0:
+        lines["Cox"] = hr_line(hr, bool(p < s.alpha and not pale))
+    if x.get("km_status") == "tested" and np.isfinite(float(x.get("km_p", np.nan))):
+        lhr, sig = float(x.get("logrank_hr", np.nan)), bool(float(x["km_p"]) < s.alpha)
+        oe = float(x.get("o_high", np.nan)) - float(x.get("e_high", np.nan))
+        if np.isfinite(lhr) and lhr > 0:
+            lines["KM"] = hr_line(lhr, sig)
+        elif np.isfinite(oe):                           # an arm without events (HR 0 or none): observed - expected
+            lines["KM"] = (np.sign(oe), sig)
+    tests = [k for k in ("paired", "unpaired")
+             if x.get(f"{k}_status") == "tested" and np.isfinite(x.get(f"{k}_delta_median", np.nan))]
+    hits = [k for k in tests if _flag(x.get(f"{k}_hit"))]
+    if tests:                                           # a group hit in either test, as the overview's frame
+        d = np.round(float(x[f"{(hits or tests)[0]}_delta_median"]), s.round_decimals)    # as the hit rule rounds
+        tiny = not hits and abs(d) < s.evidence_min_delta * delta_scale
+        lines["T/N"] = (0.0 if tiny else np.sign(d), bool(hits))
+    text = "  ".join(f"{k} {_mark(*lines[k]) if k in lines else '–'}" for k in ("Cox", "KM", "T/N"))
+    cox, km = lines.get("Cox", (0, False))[1], lines.get("KM", (0, False))[1]
+    if not (cox or km):
+        return "", text
+    if len({d for d, sig in lines.values() if sig and d}) > 1:
+        return "E", text
+    if len({d for d, _ in lines.values() if d}) > 1:
+        return "D", text
+    return ("A" if cox and km else "B" if cox else "C") + ("+" if lines.get("T/N", (0, False))[1] else ""), text
+
+
+def add_evidence(cells: pd.DataFrame, s: Settings, scale: dict | None = None) -> pd.DataFrame:
+    """cells with `evidence` (the grade) and `evidence_lines` (Cox, KM and T/N: see evidence()) after the endpoint.
+    `scale`: {event_id: factor} for evidence_min_delta (the HIT index's events: delta_scale())."""
+    if cells.empty:
+        return cells.assign(evidence=pd.Series(dtype=object), evidence_lines=pd.Series(dtype=object))
+    g = [evidence(x, s, (scale or {}).get(x.event_id, 1.0)) for _, x in cells.iterrows()]
+    at = list(cells.columns).index("endpoint") + 1 if "endpoint" in cells else len(cells.columns)
+    cells = cells.copy()
+    cells.insert(at, "evidence_lines", [t for _, t in g])
+    cells.insert(at, "evidence", [k for k, _ in g])
+    return cells
+
+
+def _evidence_lines(cells: pd.DataFrame, s: Settings, has_hit: bool = False) -> list[str]:
+    """The report's lines on the evidence grades, with how many cells have each."""
+    if "evidence" not in cells or cells.empty:
+        return []
+    k = s.hit_min_abs_delta / s.min_abs_delta if s.min_abs_delta > 0 else 1.0
+    tiny = f"{s.evidence_min_delta:g} in PSI" + (f", {s.evidence_min_delta * k:g} in the HIT index" if has_hit else "")
+    n = cells.evidence.value_counts()
+    count = (lambda *gs: " · ".join(f"{g} {int(n.get(g, 0))}" for g in gs))     # noqa: E731
+    return [
+        "- **Evidence grades** (`evidence`, `evidence_lines` in `cells.csv`): each event × cohort has three lines, "
+        "Cox (the adjusted model where fitted), KM, and the change between the "
+        "groups (T/N). Each is ↑ or ↓ when significant, in parentheses when not (an imprecise fit is not significant "
+        "but keeps its direction), = with no direction (a line that is not significant and tiny: an HR within "
+        f"{s.evidence_hr_band:g}-fold of 1, or a change below {tiny}), and – when not tested. "
+        "↑ means a "
+        "higher hazard with a higher value (Cox), in the high arm (KM), or a higher value in the case group (T/N), "
+        "so all ↑ (or all ↓) says one thing: the case group's shift goes with a higher hazard.",
+        f"  - **A** Cox and KM p < {s.alpha:g}, **B** Cox, **C** KM; no line pointing the other way; **+** the T/N "
+        f"change is a group hit too: {count('A+', 'A', 'B+', 'B', 'C+', 'C')}.",
+        f"  - **D** a survival test p < {s.alpha:g} but another line pointing the other way: {count('D')}. **E** "
+        f"significant lines in opposite directions: {count('E')}.",
+        "  - A grade describes one cohort. Many cohorts are tested, so compare the counts with what chance gives "
+        "(below)."]
+
+
+def delta_scale(ds: Dataset, s: Settings) -> dict:
+    """{event_id: factor} for evidence_min_delta: the HIT index's (hit_min_abs_delta / min_abs_delta), 1 for PSI."""
+    k = s.hit_min_abs_delta / s.min_abs_delta if s.min_abs_delta > 0 else 1.0
+    return {e: k for e, t in ds.events.event_type.items() if quantity(t) == "HIT index"}
+
+
+def page_cohorts(cells: pd.DataFrame, event: str, s: Settings) -> tuple[list[str], str]:
+    """The cohorts an event's page shows by default, and a note for its title: every cohort graded A+ to C (best
+    grade first, then as pick_cohorts orders them), at most Settings.cohorts_per_page; with none, the strongest
+    cohort (pick_cohorts) and the note that none is graded so."""
+    order = pick_cohorts(cells, event, ALL, s.alpha)
+    grade = cells[cells.event_id.eq(event)].set_index("cohort").get("evidence", pd.Series(dtype=object))
+    good = sorted((c for c in order if grade.get(c, "") in PAGE_GRADES), key=lambda c: EVIDENCE.index(grade[c]))
+    if not good:
+        return order[:1], "no cohort graded A–C"
+    n = s.cohorts_per_page
+    return good[:n], (f"{n} of {len(good)} cohorts graded A–C" if len(good) > n else "")
 
 
 def pick_cohorts(cells: pd.DataFrame, event: str, n: int = 3, alpha: float = 0.05) -> list[str]:
@@ -423,7 +556,7 @@ def gene_events(events_table: pd.DataFrame, genes) -> list[str]:
 
 def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, settings: Settings | None = None,
           model: CoxModel | None = None, adjusted="auto", baseline: dict | None = None, gtf=None, out_dir=None,
-          top: int = 3, max_pages: int = 30, log=print, call: str = "", proteins=None, gex: bool = True,
+          top: int | None = None, max_pages: int = 30, log=print, call: str = "", proteins=None, gex: bool = True,
           include_hit: bool = False, correlation: bool = False) -> ProbeResult:
     """Probe events (all of `genes`, the `events` given, or every event) in `cohorts` (default all) for one endpoint
     (default OS). `adjusted`: "auto" (age, sex and stage found in the clinical table), a CoxModel, or None.
@@ -431,7 +564,9 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
     host gene's own expression statistics (expression_cells.csv, its own page and its row in the overview) when
     expression is given. `include_hit`: also probe HIT-index events (left out by default: one per exon, a far larger
     set). `correlation`: Spearman rho of each event with its host gene's expression and with the other events of its
-    gene, per cohort (correlations.csv, correlation.png; see correlation.py)."""
+    gene, per cohort (correlations.csv, correlation.png; see correlation.py). `top`: the cohorts each page shows:
+    None, those graded A+ to C (see evidence() and page_cohorts()); a number, the N most promising (pick_cohorts); or
+    ALL."""
     from matplotlib.backends.backend_pdf import PdfPages
 
     from .annotation import read_gtf
@@ -462,8 +597,9 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
         f"{_describe(base_model, ds, ev, s)}"
         + (f"; adjusted {_describe(adj_model, ds, ev, s)}" if adj_model else "; no adjusted model"))
     base = analyze(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=base_model)
-    adj = analyze(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=adj_model) if adj_model else None
-    cells = combine(base, adj, ep)
+    adj = analyze(ds, events=ev, endpoints=[ep], cohorts=cohorts, settings=s, model=adj_model,   # its Cox columns
+                  cox_only=True) if adj_model else None
+    cells = add_evidence(combine(base, adj, ep), s, delta_scale(ds, s))
     keep = observed(cells, s)                          # present enough for the gene maps and correlations
     rare = [e for e in ev if e not in keep]
     if rare:
@@ -540,14 +676,19 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
             genes_ |= {g for g in (row.gene, row.gene_id) if g}
         gtf_table = read_gtf(gtf, wins, genes=sorted(genes_))
     pages, page_col, expr_pages, map_pages = [], {}, [], []
-    focus_of = {}                                       # the cohorts each event's page shows
+    focus_of, note_of = {}, {}                          # the cohorts each event's page shows, and its title note
     for r in todo.itertuples():
         if r.event_id not in drawable:
             continue
-        focus = [c for c in (cohorts or []) if c in set(cells.cohort)][:top] if cohorts and len(cohorts) <= top \
-            else pick_cohorts(cells, r.event_id, top, s.alpha)
+        note = ""
+        if top is None:                                 # the cohorts graded A-C (see evidence())
+            focus, note = page_cohorts(cells, r.event_id, s)
+        elif cohorts and len(cohorts) <= top:
+            focus = [c for c in cohorts if c in set(cells.cohort)][:top]
+        else:
+            focus = pick_cohorts(cells, r.event_id, top, s.alpha)
         if focus:
-            focus_of[r.event_id] = focus
+            focus_of[r.event_id], note_of[r.event_id] = focus, note
     import matplotlib
     with matplotlib.rc_context(S.rc()), PdfPages(out_dir / "probe.pdf", metadata={"CreationDate": None,
                                                                                   "ModDate": None}) as pdf:
@@ -585,13 +726,18 @@ def probe(ds: Dataset, genes=None, events=None, cohorts=None, endpoint=None, *, 
             if not focus:
                 continue
             parts = page_parts(focus, s.cohorts_per_page)  # many cohorts: several pages, each with the full forest
+            mine = cells[cells.event_id.eq(r.event_id)]
+            grades = {(r.event_id, c): g for c, g in zip(mine.cohort, mine.evidence) if g}
+            lines = dict(zip(((r.event_id, c) for c in mine.cohort), mine.evidence_lines))
             for i, chunk in enumerate(parts, 1):
                 stem = f"{r.rank:03d}_{safe_name(r.event_id)}" + (f"_p{i}" if len(parts) > 1 else "")
                 p = event_panel(ds, r.event_id, chunk, ep, settings=s, model=base_model, gtf=gtf_table,
                                 results=_slice(base, r.event_id), detail=adj_model, out_dir=out_dir / "pages",
                                 stem=stem, proteins={r.event_id: pchanges[r.event_id]} if r.event_id in pchanges
                                 else None, detail_results=_slice(adj, r.event_id) if adj is not None else None,
-                                part=(i, len(parts)) if len(parts) > 1 else None)
+                                part=(i, len(parts)) if len(parts) > 1 else None, highlight=grades,
+                                highlight_title="Evidence", highlight_legend=EVIDENCE_LEGEND, shade_marks=False,
+                                row_notes=lines, title_note=note_of.get(r.event_id) or None)
                 p.figure.savefig(pdf, format="pdf")
                 pages.append((r.event_id, stem, chunk))
                 page_col.setdefault(r.event_id, f"pages/{stem}.png")
@@ -919,9 +1065,15 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
           if adj_model else "- **Adjusted model:** none (no clinical table, or no age/sex/stage column found)."),
          _ridge_line(cells, s, v, bool(base_model.covariates)),
          f"- **Pages:** one per ranked, measurable event (at most {max_pages}). Each shows "
-         + ("every cohort with a test" if top >= ALL else f"the event's {top} most promising cohorts")
-         + f" (Cox p < {s.alpha:g} first, low-power fits after the others within each; then by adjusted Cox p) "
-         "with their models, and every cohort in the forest. Change with `--top N` or `--top all`.",
+         + (f"every cohort graded A+ to C (below), best grade first, at most {s.cohorts_per_page}; an event with "
+            "none shows its strongest cohort and says so in the title" if top is None else
+            "every cohort with a test" if top >= ALL else
+            f"the event's {top} most promising cohorts (Cox p < {s.alpha:g} first, low-power fits after the others "
+            "within each; then by adjusted Cox p)")
+         + ", with their models, and every cohort in the forest, its graded cohorts lettered. "
+         + ("Change with `--top N` (the N most promising by p) or `--top all`." if top is None else
+            "Without `--top`, the pages show the cohorts graded A+ to C."),
+         *_evidence_lines(cells, s, has_hit),
          "",
          "## How much is chance",
          "",
@@ -954,8 +1106,9 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
          f"## Ranked events (ranking: {RANKING})",
          "",
          "| Rank | Event | Type | Adj. p<.05 | Base p<.05 (↑/↓) | KM p<.05 | Expected | Group hits | Group + survival | "
-         f"Best cohort | HR per {U} | p |" + (" Protein (suggested) |" if ptab is not None else "") + " Page |",
-         "|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if ptab is not None else "") + "---|"]
+         f"Graded A–C | Best cohort | HR per {U} | p |" + (" Protein (suggested) |" if ptab is not None else "")
+         + " Page |",
+         "|---|---|---|---|---|---|---|---|---|---|---|---|---|" + ("---|" if ptab is not None else "") + "---|"]
     flat = marked = False
     for r in meas.head(max(40, max_pages)).itertuples():
         page = f"[page]({r.page})" if r.page else ""
@@ -974,7 +1127,8 @@ def _report(ds, cells, ranked, ep, base_model, adj_model, found, s, top, max_pag
         L.append(f"| {r.rank} | {r.label} ({r.gene}) | {r.event_type} | {r.adj_cox_p05}"
                  + (f" ({low_a}‡)" if low_a else "") + f" | {r.cox_p05} ({r.cox_p05_hr_up}/{r.cox_p05_hr_down}"
                  + (f"; {low_b}‡" if low_b else "") + f") | {r.km_p05} | {r.expected_by_chance:.1f} | {r.group_hits} | "
-                 f"{r.group_and_survival} | {r.best_cohort or '–'} | {_fmt(getattr(r, f'best_hr_per_{s.psi_hr_unit}'))} "
+                 f"{r.group_and_survival} | {getattr(r, 'evidence_a_c', 0)} | {r.best_cohort or '–'} | "
+                 f"{_fmt(getattr(r, f'best_hr_per_{s.psi_hr_unit}'))} "
                  f"| {p_txt} |{prot} {page} |")
     if marked:
         L += ["", f"‡ low power (fewer than {s.cox_low_power_events} Cox events): after p, the best cohort's fit; in "

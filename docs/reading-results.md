@@ -7,7 +7,9 @@ one assay page from top to bottom, then the expression page and the probe's file
 The figures come from the synthetic example, so you can open the same files: run `splice-assay example demo/`, then
 `splice-assay probe demo/data --gene SYN1 --gtf demo/data/annotation.gtf --proteins demo/proteins`. The cohorts are
 COH1 to COH4, and "tumour" and "normal" stand for your case and reference groups. The page shows SYN1:SE:1 in
-three cohorts:
+three cohorts, as `--top 3` draws them. By default a probe page shows the cohorts graded A+ to C, here COH2 and
+COH1, and letters every graded cohort in the forest (section 5 explains the letters; the figures here are drawn
+without them):
 - COH1, with matched pairs;
 - COH2, with too few pairs for a within-patient test;
 - COH4, with no normal samples.
@@ -139,6 +141,22 @@ stage).
   - A ‡ after a CI: that fit had fewer than 20 events (low power). It ran, but its CI is wide, and p ≥ 0.05 there
     says little against an association.
 - **Shading** marks the cohorts drawn above. Look for the same direction across cohorts.
+- **Evidence letters** (probe pages) mark every cohort with a grade, beside its name. Each cohort row's heading
+  repeats its grade and its three lines, e.g. "COH1 · Evidence A+  Cox ↑  KM ↑  T/N ↑".
+  - **Each line** is ↑ or ↓ when significant, in parentheses when not, = with no direction (not significant and
+    tiny: an HR within 1.1-fold of 1, or a PSI change under 0.05), – when not tested. ↑
+    means a higher hazard with higher PSI (Cox: the adjusted model where fitted; an imprecise fit is not significant
+    but keeps its direction), a higher hazard in the high arm (KM), or PSI higher in tumours (T/N: significant when
+    either test is a group hit).
+  - **The grades:**
+    - **A:** Cox and KM p < 0.05;
+    - **B:** Cox alone;
+    - **C:** KM alone;
+    - A, B and C have no line pointing the other way, and **+** adds a significant T/N change pointing the same way;
+    - **D:** a survival test p < 0.05, but another line points the other way;
+    - **E:** significant lines in opposite directions.
+  - **Which cohorts get a row:** those graded A+ to C. A page with none shows the event's strongest cohort and says
+    "no cohort graded A–C" in its title.
 
 ### 6. Legend and footnote
 
@@ -256,8 +274,8 @@ results laid out along the gene.
 
 | File | One row per | Key columns |
 |---|---|---|
-| `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `adj_cox_p05_low_power`, `cox_p05`, `cox_p05_low_power`, `km_p05`, `group_hits`, `best_cohort`, `best_model`, `best_hr_per_sd`, `best_p`, `best_low_power`, `protein_change`, `page` |
-| `cells.csv` | event × cohort | `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ties_high`, `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `psi_unstable`, `cox_notes`), adjusted Cox (`adj_*`) |
+| `events.csv` | event (ranked) | `rank`, `measurable`, `adj_cox_p05`, `adj_cox_p05_low_power`, `cox_p05`, `cox_p05_low_power`, `km_p05`, `group_hits`, `evidence_a_c`, `evidence_best`, `best_cohort`, `best_model`, `best_hr_per_sd`, `best_p`, `best_low_power`, `protein_change`, `page` |
+| `cells.csv` | event × cohort | `evidence` (the grade), `evidence_lines` (Cox, KM, T/N), `paired_*` and `unpaired_*` (Δ, p, q, hit), `km_*` (with `km_ties_high`, `km_ph_p`, `km_notes`), base Cox (`cox_p`, `cox_q`, `hr_per_iqr`, `ph_p`, `cox_events_per_term`, `psi_narrow`, `psi_unstable`, `cox_notes`), adjusted Cox (`adj_*`) |
 | `expression_cells.csv` | host gene × cohort | the same tests for expression (HR per SD) |
 | `correlations.csv` (with `--correlation`) | pair × cohort | `kind` (expression, event), `event_id`, `partner`, `rho`, `corr_p`, `corr_q`, `corr_n`, `corr_status`; `expr_rho` in `cells.csv`, `best_expr_rho` in `events.csv` |
 | `proteins.csv` | event | the matched transcripts, how they matched, residues, effect and features |
@@ -276,7 +294,8 @@ results laid out along the gene.
    - **Group view:** is there a tumour–normal change, and does it hold within patients?
    - **KM:** do the curves separate steadily, or do they cross (a †)?
    - **Model:** does the PSI term hold with the clinical terms, and does the header carry notes?
-   - **Forest:** do the other cohorts point the same way?
+   - **Forest:** do the other cohorts point the same way? Which carry a grade, and are any D or E (lines that
+     disagree)?
 6. **On the expression page** (the last one): is the gene's level itself shifted or prognostic, and in which
    cohorts? Where expression is equally prognostic, a splicing association could be an expression echo.
 7. **Trust convergence.** Converging evidence is the same direction in several cohorts, a group hit in the same cohort,

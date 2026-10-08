@@ -315,9 +315,37 @@ would add their difference in level to the correlation.
   10), while it is the Cox model with several clinical terms that becomes anti-conservative.
 - **Probe q values.** The probe analyzes every event of each gene it probes, so its q values are the gene-wide
   families of the previous section; `adj_cox_q` is the adjusted model's Cox family.
-- **Cohorts shown per page.** As for the best cohort: Cox p < α in a fit that is not low power (the adjusted model
-  where fitted, else the base model), then in a low-power fit, then the other fits that are not low power, then the
-  other low-power fits; within each, the smallest adjusted Cox p, then base Cox p, then KM p.
+- **Evidence grades** (`probe.evidence`; `evidence` and `evidence_lines` in `cells.csv`). Each event × cohort has
+  three lines, each with a direction and whether it is significant:
+  - **Cox:** the fit the overview shows (the adjusted model where fitted, else the base). It is significant at p < α
+    unless imprecise (95% CI over `imprecise_ci_ratio`, or low power); an imprecise fit keeps its direction, HR above
+    or below 1. With no HR per IQR (an IQR of 0), the HR and CI per SD stand in.
+  - **KM:** the log-rank test, significant at p < α. Its direction is the high arm's hazard (`logrank_hr`).
+  - **T/N:** significant when either test is a group hit (p < α and the minimum change, as the overview's frame),
+    with the direction of that hit, within patients first. Otherwise it is not significant, with the direction of
+    the within-patient test where it ran, else the all-samples test. The direction is the sign of the median change
+    (case − reference) rounded to `round_decimals`, as the hit rule rounds; a change of 0 has none (`=`).
+
+  One direction across the lines means the case group's shift goes with a higher hazard (all up), or the reverse.
+  - **A:** Cox and KM significant.
+  - **B:** Cox significant.
+  - **C:** KM significant.
+  - A, B and C have no line pointing the other way. **+** marks a significant T/N change.
+  - **D:** Cox or KM significant, and another line, not significant, pointing the other way.
+  - **E:** significant lines in opposite directions.
+  - **Ungraded:** neither Cox nor KM significant.
+
+  A line that is not significant has no direction when its effect is tiny: an HR within `evidence_hr_band` (1.1) of
+  1 (0.91 to 1.1), or a change below `evidence_min_delta` (0.05 PSI; scaled as `hit_min_abs_delta` to
+  `min_abs_delta` for the HIT index, so 0.10). Such a line, like one not tested (e.g. no reference samples), neither
+  supports nor contradicts. KM and Cox use the same patients,
+  so their agreement is a check against a fit driven by a few patients or a non-monotone effect, not independent
+  confirmation. Grades are per cohort and nominal.
+- **Cohorts shown per page.** By default, the cohorts graded A+ to C, best grade first, at most `cohorts_per_page`
+  (6). An event with none shows its strongest cohort, and the title says so. Within a grade, and with `--top N`
+  (the N most promising), the order is as for the best cohort: Cox p < α in a fit that is not low power (the adjusted
+  model where fitted, else the base model), then in a low-power fit, then the other fits that are not low power,
+  then the other low-power fits; within each, the smallest adjusted Cox p, then base Cox p, then KM p.
 
 ## The figures
 

@@ -214,9 +214,11 @@ def _names(x, what, known) -> list[str]:
 
 # ============================================================================================ run
 def analyze(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Settings | None = None,
-            model: CoxModel | None = None, include_hit: bool = False) -> Results:
+            model: CoxModel | None = None, include_hit: bool = False, cox_only: bool = False) -> Results:
     """Case-vs-reference and survival statistics for the chosen events, cohorts and endpoints (default: all; without
-    named events, HIT-index events only with include_hit).
+    named events, HIT-index events only with include_hit). `cox_only`: the Cox models alone (no group tests,
+    km_status 'not_run', so survival_hit is the Cox p alone), for a second model over cells whose group and KM tests
+    are already done.
 
     q values: Benjamini-Hochberg within each gene, separately for the paired tests, the all-samples tests, the KM
     tests and the Cox PSI terms (the survival ones per endpoint), over the events and cohorts analyzed together;
@@ -251,7 +253,8 @@ def analyze(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
             host = ds.expression.loc[host_gene] if host_gene in ds.expression.index else \
                 pd.Series(np.nan, index=ds.samples.sample_id)
         for c in cohorts:
-            g_rows.append(dict(event_id=eid, gene=gene, cohort=c, **gd.compare(v, c, se)))
+            if not cox_only:
+                g_rows.append(dict(event_id=eid, gene=gene, cohort=c, **gd.compare(v, c, se)))
             if sd is None:
                 continue
             base = sd.cohorts[c]
@@ -261,13 +264,16 @@ def analyze(ds: Dataset, events=None, endpoints=None, cohorts=None, settings: Se
                 E = base["ep"][ep]
                 rec = dict(event_id=eid, gene=gene, cohort=c, endpoint=ep)
                 row, terms = survival_cell(x_base, E["pos"], E["time"], E["event"], h_base, se, model,
-                                           base["clinical"], quantity=quantity(etype))
+                                           base["clinical"], quantity=quantity(etype), km=not cox_only)
                 sv_rows.append(dict(rec, **row))
                 t_rows += [dict(rec, **t) for t in terms]
-    groups = _with_family(pd.DataFrame(g_rows), ds)
-    for test in ("paired", "unpaired"):                    # q within each gene, per test (see docs/methods.md)
-        groups = gene_fdr(groups, test, ["gene", "_family"], s.fdr_min_family)
-    groups = _order(groups.drop(columns="_family"), GROUP_FIRST)
+    if g_rows:
+        groups = _with_family(pd.DataFrame(g_rows), ds)
+        for test in ("paired", "unpaired"):                # q within each gene, per test (see docs/methods.md)
+            groups = gene_fdr(groups, test, ["gene", "_family"], s.fdr_min_family)
+        groups = _order(groups.drop(columns="_family"), GROUP_FIRST)
+    else:
+        groups = pd.DataFrame(columns=GROUP_FIRST)
     sv = _with_family(pd.DataFrame(sv_rows), ds)
     for test in ("km", "cox"):
         sv = gene_fdr(sv, test, ["gene", "endpoint", "_family"], s.fdr_min_family)

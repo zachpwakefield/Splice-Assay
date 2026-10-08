@@ -31,6 +31,44 @@ def test_single_event_panel(ds, results, gtf_path, tmp_path):
     assert {"Model term p < 0.05", "p ≥ 0.05"} <= set(texts) and not any("Filled:" in x for x in texts)
 
 
+def test_text_width_is_the_outline_extent():
+    """The fast text measure gives what Path.get_extents gives (the curves' extremes, not their control points)."""
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextPath
+
+    from splice_assay.plot import style as S
+    for text, size, kw in [("SYN1", 8.5, dict(style="italic", weight="bold")), ("2.44 (1.50–3.98)", 5.6, {}),
+                           ("Junction of the PSI form", 6, {}), ("≤0.35 ↑↓ ρ Δ", 6.2, dict(weight="bold"))]:
+        exact = TextPath((0, 0), text, size=size, prop=FontProperties(family=S.font_family(), **kw)).get_extents()
+        assert S.text_width(text, size, **kw) == pytest.approx(exact.width / 72, abs=1e-12)
+    assert S.text_width("", 6) == S.text_width("  ", 6) == 0.0
+    from matplotlib.path import Path                                       # cubic curves too (CFF fonts)
+    M, L, C3, C4, CL = Path.MOVETO, Path.LINETO, Path.CURVE3, Path.CURVE4, Path.CLOSEPOLY
+    rng = np.random.default_rng(1)
+    for codes in ([M, C4, C4, C4], [M, C3, C3, L, C4, C4, C4, CL], [M, L, L, CL]):
+        for _ in range(50):
+            v = rng.integers(-5, 6, size=(len(codes), 2)).astype(float)        # integers: degenerate curves too
+            exact = Path(v, codes).get_extents()
+            xs = S._x_points(v[:, 0].tolist(), list(codes))
+            assert max(xs) - min(xs) == pytest.approx(exact.width, abs=1e-12)
+
+
+def test_page_marks_without_shading_row_notes_and_a_title_note(ds, results):
+    """Marks on cells the page does not show stay letters in the forest (no shading, a legend item of their own);
+    row notes follow the headings; the title note ends the title."""
+    p = sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results, shade_marks=False,
+                       highlight={("SYN1:SE:1", "COH1"): "A", ("SYN1:SE:1", "COH3"): "D"}, highlight_title="Evidence",
+                       highlight_legend="Evidence grade", row_notes={("SYN1:SE:1", "COH1"): "Cox ↑  KM ↑  T/N ↑"},
+                       title_note="no cohort graded A–C")
+    texts = [x.get_text() for x in p.figure.texts]
+    assert "Cohort shown at left" in texts and "Evidence grade" in texts and "Cox ↑  KM ↑  T/N ↑" in texts
+    assert any(x.endswith("· OS · no cohort graded A–C") for x in texts) and "D" in texts
+    weight = {x.get_text(): x.get_fontweight() for x in p.figure.texts if x.get_text() in ("COH1", "COH3")}
+    assert weight == {"COH1": "bold", "COH3": "normal"}                       # the forest shades COH1 alone
+    assert sa.event_panel(ds, "SYN1:SE:1", ["COH1"], "OS", settings=FAST, results=results, shade_marks=False,
+                          highlight={("SYN1:SE:1", "COH3"): ""}) is not None   # blank labels: no letter, no error
+
+
 def test_two_events_with_highlight(ds, results, gtf_path):
     p = sa.event_panel(ds, ["SYN1:SE:1", "SYN1:RI:1"], "COH1", "DSS", gtf=gtf_path, settings=FAST, results=results,
                        highlight={("SYN1:SE:1", "COH1"): "A", ("SYN1:RI:1", "COH1"): "B"}, highlight_title="Tier")
