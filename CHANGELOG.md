@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-08)
 
 - **The gene map's triangle names its events.** Each row's event is named at the row's end, on the diagonal (where
   its rank was), and each column's under the column, so a cell's pair reads without counting rows.
